@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/raw/*
+!data/raw/.gitkeep
+*.h5
+*.keras
+chroma_db/
+.ipynb_checkpoints/
