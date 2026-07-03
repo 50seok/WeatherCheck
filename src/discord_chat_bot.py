@@ -162,7 +162,7 @@ def _build_daily_message() -> str:
     return f"{format_header(pred)}\n{generate_briefing(pred)}"
 
 
-@tasks.loop(minutes=1)
+@tasks.loop(seconds=1)
 async def check_schedule():
     now = dt.datetime.now()
     hhmm = now.strftime("%H:%M")
