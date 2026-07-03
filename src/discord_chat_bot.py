@@ -26,6 +26,16 @@ HELP_TEXT = """🌤️ **출근 비서 봇 사용법**
 - **채팅 정리** — "메시지 정리해줘" / "최근 100개 지워줘" 처럼 말하면 최근 메시지를 지워드려요(기본 50개). 봇에게 '메시지 관리' 권한이 있어야 해요.
 - **도움말** — "뭐 할 수 있어?", "명령어 알려줘" 라고 물어보면 이 안내를 다시 보여드려요."""
 
+WEEKDAYS_KR = ["월", "화", "수", "목", "금", "토", "일"]
+
+
+def format_header(prediction: dict) -> str:
+    """디스코드 마크다운 헤더(#)로 날짜·요일을 크게 표시."""
+    d = dt.datetime.strptime(prediction["date"], "%Y-%m-%d").date()
+    label = "오늘" if prediction.get("source") == "observed" else "내일"
+    return f"# {label} {d.isoformat()} ({WEEKDAYS_KR[d.weekday()]}요일)"
+
+
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
@@ -132,7 +142,7 @@ async def on_message(message: discord.Message):
         async with message.channel.typing():
             pred = get_today_observed() if intent == "weather_today" else get_prediction()
             text = generate_briefing(pred)
-        await message.channel.send(text)
+        await message.channel.send(f"{format_header(pred)}\n{text}")
 
 
 @tasks.loop(minutes=1)
@@ -144,8 +154,9 @@ async def check_schedule():
         if target == hhmm and _sent_today.get(channel_id) != today:
             channel = client.get_channel(int(channel_id))
             if channel:
-                text = generate_briefing(get_prediction())
-                await channel.send(text)
+                pred = get_prediction()
+                text = generate_briefing(pred)
+                await channel.send(f"{format_header(pred)}\n{text}")
                 _sent_today[channel_id] = today
 
 
