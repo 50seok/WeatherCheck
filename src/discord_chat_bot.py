@@ -126,10 +126,18 @@ async def on_message(message: discord.Message):
 
     if intent == "schedule":
         if detail:
+            channel_id = str(message.channel.id)
             schedule = _load_schedule()
-            schedule[str(message.channel.id)] = detail
+            schedule[channel_id] = detail
             _save_schedule(schedule)
             await message.channel.send(f"✅ 매일 {detail}에 이 채널로 브리핑을 보내드릴게요.")
+            now = dt.datetime.now()
+            if now.strftime("%H:%M") >= detail:
+                # ponytail: 등록 처리(Claude 분류 등)에 걸리는 시간 동안 목표 시각이 이미 지나가버리는 레이스 대응 -> 오늘자는 바로 발송
+                pred = get_prediction()
+                text = generate_briefing(pred)
+                await message.channel.send(f"{format_header(pred)}\n{text}")
+                _sent_today[channel_id] = now.strftime("%Y-%m-%d")
         else:
             await message.channel.send("몇 시에 보내드릴까요? 예: '아침 8시에 알려줘'")
         return
