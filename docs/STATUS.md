@@ -10,7 +10,15 @@
 - [x] **Phase 2 DL** (7/3): LSTM 학습 → ML vs DL 비교 그래프 → Streamlit v2 완료
 - [x] **Phase 3 LLM+RAG 골격** (7/3, Track B): knowledge 문서 6개 → Chroma 인덱싱 → mock 기반 근거 인용 브리핑 함수 → 디스코드 웹훅(실동작 검증 완료)
 - [x] **Phase 3 통합** (7/3): Track A 실제 예측 함수(LSTM)로 mock 교체, 디스코드 자동 발송 확인 완료
-- [ ] **마무리** (7/6): Streamlit Cloud 배포 → 보고서·발표자료(단계별 5장) → 데모 영상 → 버퍼
+- [x] **발표자료** (7/3): `docs/WeatherCheck_발표자료.pptx` — 개요 + Phase 1/2/3 단계별 5장 + 마무리, 총 18장
+- [ ] **Streamlit Cloud 배포** — 코드는 배포 대비 완료(모델·데이터 파일 없으면 자동 재학습 폴백), 실제 배포는 GitHub 계정 연동 필요해 사용자가 진행(아래 절차 참고)
+- 데모 영상: 생략 결정 (7/3)
+
+## Streamlit Cloud 배포 절차
+1. https://share.streamlit.io 접속 → GitHub 계정으로 로그인
+2. "New app" → 레포 `50seok/WeatherCheck`, 브랜치 `main`, 메인 파일 `app.py` 선택
+3. Secrets 설정 불필요 — `app.py`는 Track A 전용이라 `ANTHROPIC_API_KEY`/`DISCORD_WEBHOOK_URL` 안 씀
+4. Deploy 클릭. 첫 실행 시 `data/raw/seoul_weather.csv`·`src/dl/models/lstm_model.keras`가 git 미추적이라 없으므로, 합성 데이터 생성 + LSTM 즉석 재학습이 자동으로 돌아감(첫 로딩만 조금 오래 걸림, 이후 캐시됨)
 
 ## 트랙 현황
 | 트랙 | 범위 | 상태 | 폴더 | 브랜치 |
