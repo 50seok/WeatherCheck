@@ -14,7 +14,7 @@
 | 트랙 | 범위 | 상태 | 워크트리 |
 |---|---|---|---|
 | A | ML → DL | 미착수 | (생성 시 기입) |
-| B | RAG·브리핑·봇 | mock 파이프라인 완성, Track A 통합 대기 | main (워크트리 미사용 — 단일 트랙 작업) |
+| B | RAG·브리핑·봇 | mock 파이프라인 완성+실동작 검증 완료, Track A 통합 대기 | main (워크트리 미사용 — 단일 트랙 작업) |
 
 ## Track B 구현 메모
 - `data/knowledge/*.md` (6개): 우산·일교차 옷차림·폭염·한파·미세먼지·자외선 가이드 — 기상청 생활기상지수 공개자료 요약
@@ -23,10 +23,10 @@
 - `src/briefing.py`: `generate_briefing(prediction)` — RAG 검색 결과를 근거로 Claude API(`claude-sonnet-5`)가 한국어 브리핑 생성. `ANTHROPIC_API_KEY` 필요(.env)
 - `src/discord_bot.py`: `send_briefing(text)` — 디스코드 웹훅으로 텍스트 전송(stdlib urllib만 사용, 최소 기능). `DISCORD_WEBHOOK_URL` 필요(.env)
 - `.env.example` 추가 — `ANTHROPIC_API_KEY`, `DISCORD_WEBHOOK_URL`
-- 검증: `python -m src.predictor`, `python -m src.rag` 실행 확인(둘 다 통과). `generate_briefing`/`send_briefing`은 API 키·웹훅 URL 없어서 실제 호출은 미검증 — 키 설정 후 확인 필요
+- 검증: `python -m src.predictor`, `python -m src.rag`, `python -m src.briefing`, `python -m src.discord_bot` 전부 실행 확인·통과(7/3). Claude API 브리핑 생성 + 디스코드 웹훅 전송 실동작 확인 완료
 
 ## 알려진 이슈
-- 없음
+- ~~디스코드 웹훅 POST가 403 Forbidden~~ (해결, 7/3): Discord(Cloudflare)가 `urllib` 기본 User-Agent(`Python-urllib/x.x`)를 차단. `src/discord_bot.py` 요청 헤더에 `User-Agent: Mozilla/5.0` 추가로 해결
 
 ## 다음 세션 시작 멘트 예시
 - Track A: "docs/STATUS.md 읽고 Track A(Phase 1 ML)만 진행해. docs/contract.md 스키마 준수."

@@ -13,7 +13,7 @@ def send_briefing(text: str) -> None:
     req = urllib.request.Request(
         webhook_url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
         method="POST",
     )
     urllib.request.urlopen(req)
