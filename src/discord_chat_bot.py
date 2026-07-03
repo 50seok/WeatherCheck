@@ -12,7 +12,7 @@ from discord.ext import tasks
 from dotenv import load_dotenv
 
 from src.briefing import generate_briefing
-from src.predictor import get_prediction
+from src.predictor import get_prediction, get_today_observed
 
 load_dotenv()
 
@@ -41,7 +41,9 @@ def _save_schedule(schedule: dict) -> None:
 def classify_message(text: str) -> tuple[str, str | None]:
     """메시지 의도를 분류. 키워드 매칭 대신 자연스러운 표현도 인식하도록 Claude에게 위임.
 
-    반환: (intent, time) — intent는 "weather"/"schedule"/"none", time은 schedule일 때만 HH:MM 또는 None.
+    반환: (intent, detail)
+    intent: "weather_today" | "weather_tomorrow" | "weather_other" | "schedule" | "none"
+    detail: schedule일 때만 HH:MM(또는 None), 그 외엔 None.
     """
     resp = Anthropic().messages.create(
         model=TIME_MODEL,
@@ -49,12 +51,14 @@ def classify_message(text: str) -> tuple[str, str | None]:
         messages=[{
             "role": "user",
             "content": (
-                "디스코드 채널의 메시지 하나를 아래 세 종류 중 하나로 분류해서, "
-                "반드시 지정된 형식으로만 답해(다른 말 절대 하지 마):\n"
-                "1. 오늘/내일 날씨, 우산, 옷차림 등을 묻는 질문 -> WEATHER\n"
-                "2. 매일 정해진 시각에 브리핑을 자동으로 받고 싶다는 요청 -> SCHEDULE HH:MM"
+                "디스코드 채널의 메시지 하나를 아래 중 정확히 하나로 분류해서, "
+                "반드시 지정된 라벨로만 답해(다른 말 절대 하지 마):\n"
+                "- 오늘 날씨/우산/옷차림을 묻거나, 날짜 언급 없이 그냥 날씨를 물으면 -> WEATHER_TODAY\n"
+                "- 내일 날씨를 물으면 -> WEATHER_TOMORROW\n"
+                "- 오늘·내일이 아닌 다른 날(특정 요일, 모레, 며칠 뒤 등)의 날씨를 물으면 -> WEATHER_OTHER\n"
+                "- 매일 정해진 시각에 브리핑을 자동으로 받고 싶다는 요청 -> SCHEDULE HH:MM"
                 "(24시간제. 시각이 명시 안 됐으면 HH:MM 자리에 NONE)\n"
-                "3. 그 외 날씨/알림과 무관한 잡담 -> NONE\n\n"
+                "- 그 외 날씨/알림과 무관한 잡담 -> NONE\n\n"
                 f"메시지: {text}"
             ),
         }],
@@ -64,8 +68,8 @@ def classify_message(text: str) -> tuple[str, str | None]:
         parts = result.split()
         hhmm = parts[1] if len(parts) > 1 else "NONE"
         return "schedule", (hhmm if len(hhmm) == 5 and hhmm[2] == ":" else None)
-    if result.startswith("WEATHER"):
-        return "weather", None
+    if result in ("WEATHER_TODAY", "WEATHER_TOMORROW", "WEATHER_OTHER"):
+        return result.lower(), None
     return "none", None
 
 
@@ -92,9 +96,14 @@ async def on_message(message: discord.Message):
             await message.channel.send("몇 시에 보내드릴까요? 예: '아침 8시에 알려줘'")
         return
 
-    if intent == "weather":
+    if intent == "weather_other":
+        await message.channel.send("죄송해요, 지금은 오늘·내일 날씨만 예측할 수 있어요. 더 먼 미래는 아직 지원하지 않아요 🙏")
+        return
+
+    if intent in ("weather_today", "weather_tomorrow"):
         async with message.channel.typing():
-            text = generate_briefing(get_prediction())
+            pred = get_today_observed() if intent == "weather_today" else get_prediction()
+            text = generate_briefing(pred)
         await message.channel.send(text)
 
 
