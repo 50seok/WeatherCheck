@@ -19,6 +19,7 @@ load_dotenv()
 SCHEDULE_PATH = "data/schedule.json"
 TIME_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_CLEAR_COUNT = 50
+PREP_MINUTES = 3  # 정각에 지연 없이 보내려고 이만큼 미리 브리핑을 만들어둠
 
 HELP_TEXT = """🌤️ **출근 비서 봇 사용법**
 - **오늘/내일 날씨** — "오늘 날씨 어때?", "내일 우산 필요해?" 처럼 물어보면 근거 문서를 인용해 답해드려요. (오늘·내일만 가능, 그 이상은 아직 지원 안 해요)
@@ -40,6 +41,11 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 _sent_today: dict[str, str] = {}
+_prepared: dict[str, tuple[str, str]] = {}  # channel_id -> (date, 미리 만들어둔 메시지)
+
+
+def _minus_minutes(hhmm: str, minutes: int) -> str:
+    return (dt.datetime.strptime(hhmm, "%H:%M") - dt.timedelta(minutes=minutes)).strftime("%H:%M")
 
 
 def _load_schedule() -> dict:
@@ -134,9 +140,7 @@ async def on_message(message: discord.Message):
             now = dt.datetime.now()
             if now.strftime("%H:%M") >= detail:
                 # ponytail: 등록 처리(Claude 분류 등)에 걸리는 시간 동안 목표 시각이 이미 지나가버리는 레이스 대응 -> 오늘자는 바로 발송
-                pred = get_prediction()
-                text = generate_briefing(pred)
-                await message.channel.send(f"{format_header(pred)}\n{text}")
+                await message.channel.send(_build_daily_message())
                 _sent_today[channel_id] = now.strftime("%Y-%m-%d")
         else:
             await message.channel.send("몇 시에 보내드릴까요? 예: '아침 8시에 알려줘'")
@@ -153,20 +157,33 @@ async def on_message(message: discord.Message):
         await message.channel.send(f"{format_header(pred)}\n{text}")
 
 
+def _build_daily_message() -> str:
+    pred = get_prediction()
+    return f"{format_header(pred)}\n{generate_briefing(pred)}"
+
+
 @tasks.loop(minutes=1)
 async def check_schedule():
     now = dt.datetime.now()
     hhmm = now.strftime("%H:%M")
     today = now.strftime("%Y-%m-%d")
     for channel_id, target in _load_schedule().items():
-        if target == hhmm and _sent_today.get(channel_id) != today:
+        if _sent_today.get(channel_id) == today:
+            continue
+
+        # 정각 3분 전: 미리 브리핑을 만들어 캐시(정각에 지연 없이 보내기 위함)
+        if hhmm == _minus_minutes(target, PREP_MINUTES) and _prepared.get(channel_id, (None,))[0] != today:
+            _prepared[channel_id] = (today, _build_daily_message())
+            print(f"[check_schedule] prepared for {channel_id}", flush=True)
+
+        if hhmm == target:
             channel = client.get_channel(int(channel_id))
             if channel is None:
                 print(f"[check_schedule] channel {channel_id} not found in cache!", flush=True)
                 continue
-            pred = get_prediction()
-            text = generate_briefing(pred)
-            await channel.send(f"{format_header(pred)}\n{text}")
+            cached_date, cached_text = _prepared.get(channel_id, (None, None))
+            text = cached_text if cached_date == today else _build_daily_message()  # 준비 못 했으면 그 자리에서 생성
+            await channel.send(text)
             _sent_today[channel_id] = today
             print(f"[check_schedule] sent to {channel_id}", flush=True)
 
