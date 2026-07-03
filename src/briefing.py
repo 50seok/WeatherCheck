@@ -42,6 +42,6 @@ def generate_briefing(prediction: dict) -> str:
 
 
 if __name__ == "__main__":
-    from src.predictor import get_mock_prediction
+    from src.predictor import get_prediction
 
-    print(generate_briefing(get_mock_prediction()))
+    print(generate_briefing(get_prediction()))

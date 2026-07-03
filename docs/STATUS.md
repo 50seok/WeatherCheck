@@ -9,18 +9,19 @@
 - [x] **Phase 1 ML** (7/3): EDA → 모델 3개 비교(LR/RF/XGB) → Streamlit v1 완료 (실데이터로 교체, 아래 이슈 참고)
 - [x] **Phase 2 DL** (7/3): LSTM 학습 → ML vs DL 비교 그래프 → Streamlit v2 완료
 - [x] **Phase 3 LLM+RAG 골격** (7/3, Track B): knowledge 문서 6개 → Chroma 인덱싱 → mock 기반 근거 인용 브리핑 함수 → 디스코드 웹훅(실동작 검증 완료)
-- [ ] **Phase 3 통합** (7/3 진행 중): Track A 실제 예측 함수(ML/DL)로 mock 교체, 디스코드 자동 발송 확인
+- [x] **Phase 3 통합** (7/3): Track A 실제 예측 함수(LSTM)로 mock 교체, 디스코드 자동 발송 확인 완료
 - [ ] **마무리** (7/6): Streamlit Cloud 배포 → 보고서·발표자료(단계별 5장) → 데모 영상 → 버퍼
 
 ## 트랙 현황
 | 트랙 | 범위 | 상태 | 폴더 | 브랜치 |
 |---|---|---|---|---|
 | A | ML → DL | 완료 (Phase 1/2) | `C:\Mark42\WeatherCheck` (main) | main |
-| B | RAG·브리핑·봇 | mock 파이프라인+실동작 검증 완료, main 병합 후 Track A 통합 진행 중 | `C:\Mark42\WeatherCheck-rag` | feature/rag-briefing |
+| B | RAG·브리핑·봇 | Track A(LSTM) 통합 완료, end-to-end 검증 완료 | `C:\Mark42\WeatherCheck-rag` | feature/rag-briefing |
 
 ## Track B 구현 메모
 - `data/knowledge/*.md` (6개): 우산·일교차 옷차림·폭염·한파·미세먼지·자외선 가이드 — 기상청 생활기상지수 공개자료 요약
-- `src/predictor.py`: `get_mock_prediction()` — contract.md 스키마, `source: "mock"`. **Track A 통합 시 이 함수 호출부만 실제 예측 함수로 교체** (진행 중, 아래 참고)
+- `src/predictor.py`: `get_prediction()` — `src.dl.predict`(LSTM, MAE 2.41°C로 ML 대비 최고 성능) 호출, contract.md 스키마 그대로 반환(`source: "lstm"`). mock(`get_mock_prediction`)은 Track A 통합 완료로 제거.
+- `data/raw/seoul_weather.csv`, `src/dl/models/lstm_model.keras`: 둘 다 gitignore 대상이라 git 병합에 안 딸려옴 — Track A 워크트리(`C:\Mark42\WeatherCheck`)에서 로컬 복사해서 사용. 배포 환경(Streamlit Cloud 등)에 옮길 땐 이 두 파일도 같이 옮겨야 함(또는 `src/dl/train.py` 재실행).
 - `src/rag.py`: Chroma(`chroma_db/`, gitignore됨)로 인덱싱. 임베딩은 Chroma 기본 ONNX 모델(79MB 다운로드) 대신 **TF-IDF(sklearn)** 사용 — 이 네트워크에서 ONNX 모델 다운로드가 반복적으로 timeout돼서 판단 후 교체. 문서 6~10개 규모라 매 검색마다 컬렉션 재구축해도 즉시 처리됨
 - `src/briefing.py`: `generate_briefing(prediction)` — RAG 검색 결과를 근거로 Claude API(`claude-haiku-4-5-20251001`)가 한국어 브리핑 생성. 단순 요약·생성 작업이라 sonnet 5는 과함 판단 후 haiku로 교체. `ANTHROPIC_API_KEY` 필요(.env)
 - `src/discord_bot.py`: `send_briefing(text)` — 디스코드 웹훅으로 텍스트 전송(stdlib urllib만 사용, 최소 기능). `DISCORD_WEBHOOK_URL` 필요(.env)
