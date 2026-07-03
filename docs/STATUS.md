@@ -11,14 +11,16 @@
 - [x] **Phase 3 LLM+RAG 골격** (7/3, Track B): knowledge 문서 6개 → Chroma 인덱싱 → mock 기반 근거 인용 브리핑 함수 → 디스코드 웹훅(실동작 검증 완료)
 - [x] **Phase 3 통합** (7/3): Track A 실제 예측 함수(LSTM)로 mock 교체, 디스코드 자동 발송 확인 완료
 - [x] **발표자료** (7/3): `docs/WeatherCheck_발표자료.pptx` — 개요 + Phase 1/2/3 단계별 5장 + 마무리, 총 18장
-- [ ] **Streamlit Cloud 배포** — 코드는 배포 대비 완료(모델·데이터 파일 없으면 자동 재학습 폴백), 실제 배포는 GitHub 계정 연동 필요해 사용자가 진행(아래 절차 참고)
+- [ ] **Streamlit Cloud 배포** — 사용자가 진행 중(GitHub 계정 연동 필요). 두 가지 이슈 발견·해결:
+  1. Cloud 기본 Python 3.14에 tensorflow wheel 없어 설치 실패 → `.python-version`으로 3.13 고정 (7/4)
+  2. 모델·데이터 파일 gitignore돼서 배포 때마다 LSTM 재학습 발생 → 로딩 지연 원인. 용량이 450KB 미만이라 그냥 git에 커밋(`data/raw/seoul_weather.csv`, `src/dl/models/lstm_model.keras`, `notebooks/figures/*.png`)해서 재학습 자체를 없앰 (7/4)
 - 데모 영상: 생략 결정 (7/3)
 
 ## Streamlit Cloud 배포 절차
 1. https://share.streamlit.io 접속 → GitHub 계정으로 로그인
 2. "New app" → 레포 `50seok/WeatherCheck`, 브랜치 `main`, 메인 파일 `app.py` 선택
 3. Secrets 설정 불필요 — `app.py`는 Track A 전용이라 `ANTHROPIC_API_KEY`/`DISCORD_WEBHOOK_URL` 안 씀
-4. Deploy 클릭. 첫 실행 시 `data/raw/seoul_weather.csv`·`src/dl/models/lstm_model.keras`가 git 미추적이라 없으므로, 합성 데이터 생성 + LSTM 즉석 재학습이 자동으로 돌아감(첫 로딩만 조금 오래 걸림, 이후 캐시됨)
+4. Deploy 클릭. 학습된 모델·데이터·그래프가 이제 git에 커밋돼 있어 재학습 없이 바로 로드됨
 
 ## 트랙 현황
 | 트랙 | 범위 | 상태 | 폴더 | 브랜치 |
@@ -29,7 +31,7 @@
 ## Track B 구현 메모
 - `data/knowledge/*.md` (6개): 우산·일교차 옷차림·폭염·한파·미세먼지·자외선 가이드 — 기상청 생활기상지수 공개자료 요약
 - `src/predictor.py`: `get_prediction()` — `src.dl.predict`(LSTM, MAE 2.41°C로 ML 대비 최고 성능) 호출, contract.md 스키마 그대로 반환(`source: "lstm"`). mock(`get_mock_prediction`)은 Track A 통합 완료로 제거.
-- `data/raw/seoul_weather.csv`, `src/dl/models/lstm_model.keras`: 둘 다 gitignore 대상이라 git 병합에 안 딸려옴 — Track A 워크트리(`C:\Mark42\WeatherCheck`)에서 로컬 복사해서 사용. 배포 환경(Streamlit Cloud 등)에 옮길 땐 이 두 파일도 같이 옮겨야 함(또는 `src/dl/train.py` 재실행).
+- `data/raw/seoul_weather.csv`, `src/dl/models/lstm_model.keras`, `notebooks/figures/*.png`: 원래 gitignore 대상이었으나 배포 시 매번 재학습돼 로딩이 느려지는 문제 발견(7/4) → 용량이 450KB 미만이라 `.gitignore`에 예외 추가 후 git에 커밋. `src/dl/predict.py`의 "파일 없으면 재학습" 폴백은 유지(로컬에서 파일 지우고 실험할 때나 향후 재학습 시 대비용).
 - `src/rag.py`: Chroma(`chroma_db/`, gitignore됨)로 인덱싱. 임베딩은 Chroma 기본 ONNX 모델(79MB 다운로드) 대신 **TF-IDF(sklearn)** 사용 — 이 네트워크에서 ONNX 모델 다운로드가 반복적으로 timeout돼서 판단 후 교체. 문서 6~10개 규모라 매 검색마다 컬렉션 재구축해도 즉시 처리됨
 - `src/briefing.py`: `generate_briefing(prediction)` — RAG 검색 결과를 근거로 Claude API(`claude-haiku-4-5-20251001`)가 한국어 브리핑 생성. 단순 요약·생성 작업이라 sonnet 5는 과함 판단 후 haiku로 교체. `ANTHROPIC_API_KEY` 필요(.env)
 - `src/discord_bot.py`: `send_briefing(text)` — 디스코드 웹훅으로 텍스트 전송(stdlib urllib만 사용, 최소 기능). `DISCORD_WEBHOOK_URL` 필요(.env)
