@@ -1,6 +1,6 @@
-"""디스코드 대화형 봇: 채팅으로 "날씨" 물어보면 RAG 브리핑 답장, "알림"으로 자연어 시간 설정.
+"""디스코드 대화형 봇: 날씨 질문에 RAG 브리핑 답장, 자연어로 알림 시간 설정, 채팅 정리, 도움말.
 send_briefing(웹훅, 단방향)과 별개 — 이건 실시간으로 메시지를 들어야 해서 계속 실행 상태 유지 필요.
-실행: python -m src.discord_chat_bot
+실행: python -m src.discord_chat_bot · 기능 목록은 HELP_TEXT 참고.
 """
 import datetime as dt
 import json
@@ -18,6 +18,13 @@ load_dotenv()
 
 SCHEDULE_PATH = "data/schedule.json"
 TIME_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_CLEAR_COUNT = 50
+
+HELP_TEXT = """🌤️ **출근 비서 봇 사용법**
+- **오늘/내일 날씨** — "오늘 날씨 어때?", "내일 우산 필요해?" 처럼 물어보면 근거 문서를 인용해 답해드려요. (오늘·내일만 가능, 그 이상은 아직 지원 안 해요)
+- **알림 시간 설정** — "매일 아침 8시에 알려줘" 처럼 말하면 매일 그 시각에 이 채널로 브리핑을 자동으로 보내드려요.
+- **채팅 정리** — "메시지 정리해줘" / "최근 100개 지워줘" 처럼 말하면 최근 메시지를 지워드려요(기본 50개). 봇에게 '메시지 관리' 권한이 있어야 해요.
+- **도움말** — "뭐 할 수 있어?", "명령어 알려줘" 라고 물어보면 이 안내를 다시 보여드려요."""
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -42,8 +49,8 @@ def classify_message(text: str) -> tuple[str, str | None]:
     """메시지 의도를 분류. 키워드 매칭 대신 자연스러운 표현도 인식하도록 Claude에게 위임.
 
     반환: (intent, detail)
-    intent: "weather_today" | "weather_tomorrow" | "weather_other" | "schedule" | "none"
-    detail: schedule일 때만 HH:MM(또는 None), 그 외엔 None.
+    intent: "weather_today" | "weather_tomorrow" | "weather_other" | "schedule" | "clear" | "help" | "none"
+    detail: schedule일 땐 HH:MM(또는 None), clear일 땐 지울 개수(문자열 숫자, 없으면 None), 그 외엔 None.
     """
     resp = Anthropic().messages.create(
         model=TIME_MODEL,
@@ -58,7 +65,10 @@ def classify_message(text: str) -> tuple[str, str | None]:
                 "- 오늘·내일이 아닌 다른 날(특정 요일, 모레, 며칠 뒤 등)의 날씨를 물으면 -> WEATHER_OTHER\n"
                 "- 매일 정해진 시각에 브리핑을 자동으로 받고 싶다는 요청 -> SCHEDULE HH:MM"
                 "(24시간제. 시각이 명시 안 됐으면 HH:MM 자리에 NONE)\n"
-                "- 그 외 날씨/알림과 무관한 잡담 -> NONE\n\n"
+                "- 채팅/메시지를 정리·삭제해달라는 요청 -> CLEAR N"
+                "(N은 지울 개수 숫자. 명시 안 됐으면 N 자리에 NONE)\n"
+                "- 봇 사용법·도움말·명령어를 묻는 요청 -> HELP\n"
+                "- 그 외 무관한 잡담 -> NONE\n\n"
                 f"메시지: {text}"
             ),
         }],
@@ -68,7 +78,11 @@ def classify_message(text: str) -> tuple[str, str | None]:
         parts = result.split()
         hhmm = parts[1] if len(parts) > 1 else "NONE"
         return "schedule", (hhmm if len(hhmm) == 5 and hhmm[2] == ":" else None)
-    if result in ("WEATHER_TODAY", "WEATHER_TOMORROW", "WEATHER_OTHER"):
+    if result.startswith("CLEAR"):
+        parts = result.split()
+        count = parts[1] if len(parts) > 1 else "NONE"
+        return "clear", (count if count.isdigit() else None)
+    if result in ("WEATHER_TODAY", "WEATHER_TOMORROW", "WEATHER_OTHER", "HELP"):
         return result.lower(), None
     return "none", None
 
@@ -84,14 +98,28 @@ async def on_message(message: discord.Message):
     if message.author == client.user:
         return
 
-    intent, hhmm = classify_message(message.content)
+    intent, detail = classify_message(message.content)
+
+    if intent == "help":
+        await message.channel.send(HELP_TEXT)
+        return
+
+    if intent == "clear":
+        count = int(detail) if detail else DEFAULT_CLEAR_COUNT
+        try:
+            deleted = await message.channel.purge(limit=count + 1)  # +1: 요청 메시지 자신 포함
+            notice = await message.channel.send(f"🧹 메시지 {len(deleted) - 1}개 정리했어요.")
+            await notice.delete(delay=3)
+        except discord.Forbidden:
+            await message.channel.send("메시지를 지울 권한이 없어요. 봇 권한에 '메시지 관리(Manage Messages)'를 추가해주세요.")
+        return
 
     if intent == "schedule":
-        if hhmm:
+        if detail:
             schedule = _load_schedule()
-            schedule[str(message.channel.id)] = hhmm
+            schedule[str(message.channel.id)] = detail
             _save_schedule(schedule)
-            await message.channel.send(f"✅ 매일 {hhmm}에 이 채널로 브리핑을 보내드릴게요.")
+            await message.channel.send(f"✅ 매일 {detail}에 이 채널로 브리핑을 보내드릴게요.")
         else:
             await message.channel.send("몇 시에 보내드릴까요? 예: '아침 8시에 알려줘'")
         return

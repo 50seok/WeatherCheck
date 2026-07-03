@@ -35,7 +35,12 @@
 - `src/rag.py`: Chroma(`chroma_db/`, gitignore됨)로 인덱싱. 임베딩은 Chroma 기본 ONNX 모델(79MB 다운로드) 대신 **TF-IDF(sklearn)** 사용 — 이 네트워크에서 ONNX 모델 다운로드가 반복적으로 timeout돼서 판단 후 교체. 문서 6~10개 규모라 매 검색마다 컬렉션 재구축해도 즉시 처리됨
 - `src/briefing.py`: `generate_briefing(prediction)` — RAG 검색 결과를 근거로 Claude API(`claude-haiku-4-5-20251001`)가 한국어 브리핑 생성. 단순 요약·생성 작업이라 sonnet 5는 과함 판단 후 haiku로 교체. `ANTHROPIC_API_KEY` 필요(.env)
 - `src/discord_bot.py`: `send_briefing(text)` — 디스코드 웹훅으로 텍스트 전송(stdlib urllib만 사용, 최소 기능). `DISCORD_WEBHOOK_URL` 필요(.env)
-- `.env.example` 추가 — `ANTHROPIC_API_KEY`, `DISCORD_WEBHOOK_URL`
+- `src/discord_chat_bot.py` (7/4 추가): 대화형 봇. 키워드 매칭 대신 Claude(haiku)가 매 메시지 의도를 분류. `DISCORD_BOT_TOKEN` 필요(.env), Developer Portal에서 "Message Content Intent" 켜야 함. 계속 실행 상태 유지 필요(`python -m src.discord_chat_bot`).
+  - 오늘/내일 날씨 질문 → RAG 브리핑 답장(오늘=실측값, 내일=LSTM 예측, 그 이상은 "미지원" 안내)
+  - 자연어로 알림 시각 설정("매일 아침 8시에 알려줘") → `data/schedule.json`(gitignore)에 저장, 매분 체크해서 자동 발송
+  - 채팅 정리("메시지 정리해줘", 기본 50개) → `channel.purge()`, 봇에 "메시지 관리" 권한 필요
+  - 도움말("뭐 할 수 있어?") → 기능 안내(`HELP_TEXT`)
+- `.env.example` 추가 — `ANTHROPIC_API_KEY`, `DISCORD_WEBHOOK_URL`, `DISCORD_BOT_TOKEN`
 - 검증: `python -m src.predictor`, `python -m src.rag`, `python -m src.briefing`, `python -m src.discord_bot` 전부 실행 확인·통과(7/3). Claude API 브리핑 생성 + 디스코드 웹훅 전송 실동작 확인 완료
 
 ## 알려진 이슈
