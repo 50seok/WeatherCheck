@@ -19,10 +19,16 @@ def load_models() -> dict:
     df = load_data()
     _, _, _, scaler = build_sequences(df)  # 학습 때와 동일 방식으로 스케일러 재현
     if not os.path.exists(MODEL_PATH):
-        # ponytail: 모델 파일은 gitignore 대상 -> 배포 환경(Streamlit Cloud 등)엔 없음. 없으면 그 자리에서 학습.
         from src.dl.train import run as train_lstm
         train_lstm()
-    model = keras.models.load_model(MODEL_PATH)
+    try:
+        model = keras.models.load_model(MODEL_PATH)
+    except Exception:
+        # ponytail: 배포 환경 tensorflow/keras 버전이 로컬과 달라 저장된 .keras를 못 읽을 수 있음(Keras 3 저장 포맷은 마이너 버전 간에도 깨짐).
+        # 그 자리에서 지금 설치된 버전으로 재학습하면 저장/로드가 같은 버전이라 항상 호환됨.
+        from src.dl.train import run as train_lstm
+        train_lstm()
+        model = keras.models.load_model(MODEL_PATH)
     return {"model": model, "scaler": scaler, "df": df, "source": "lstm"}
 
 

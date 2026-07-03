@@ -13,5 +13,6 @@ notebooks/figures/*
 !notebooks/figures/.gitkeep
 !notebooks/figures/*.png
 chroma_db/
+data/schedule.json
 .ipynb_checkpoints/
 .claude/settings.local.json
