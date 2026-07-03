@@ -6,8 +6,8 @@
 ## 진행 체크리스트
 - [x] 골격 초기화 (git·디렉토리·CLAUDE.md·contract.md) — 7/3
 - [x] GitHub 레포 생성·푸시, Track B 워크트리 생성 — 7/3
-- [x] **Phase 1 ML** (7/3): EDA → 모델 3개 비교(LR/RF/XGB) → Streamlit v1 완료 (데이터는 합성, 아래 이슈 참고)
-- [ ] **Phase 2 DL** (7/4): LSTM 학습 → ML vs DL 비교 그래프 → Streamlit v2
+- [x] **Phase 1 ML** (7/3): EDA → 모델 3개 비교(LR/RF/XGB) → Streamlit v1 완료 (실데이터로 교체, 아래 이슈 참고)
+- [x] **Phase 2 DL** (7/3): LSTM 학습 → ML vs DL 비교 그래프 → Streamlit v2 완료
 - [ ] **Phase 3 LLM+RAG** (7/5): knowledge 문서 → Chroma 인덱싱 → 근거 인용 브리핑 → 디스코드 봇 → Track A/B 통합
 - [ ] **마무리** (7/6): Streamlit Cloud 배포 → 보고서·발표자료(단계별 5장) → 데모 영상 → 버퍼
 
@@ -18,18 +18,26 @@
 | B | RAG·브리핑·봇 | 미착수 (mock으로 병렬 가능) | `C:\Mark42\WeatherCheck-rag` | feature/rag-briefing |
 
 ## 알려진 이슈
-- ~~Phase 1 데이터는 합성 데이터~~ → **해결 (7/3)**: data.kma.go.kr ASOS 일자료(서울/108, 2024-01-01~2026-07-02, 914일) 수동 다운로드 → `src/ml/import_kma.py`로 EUC-KR CSV를 스키마(date/temp_avg/temp_max/temp_min/humidity/pressure/wind_speed/precip) 변환해 `data/raw/seoul_weather.csv`에 저장(git 미추적, 결측 3건은 보간).
+- ~~Phase 1 데이터는 합성 데이터~~ → **해결 (7/3)**: data.kma.go.kr ASOS 일자료(서울/108) 수동 다운로드 → `src/ml/import_kma.py`로 EUC-KR CSV를 스키마(date/temp_avg/temp_max/temp_min/humidity/pressure/wind_speed/precip) 변환해 `data/raw/seoul_weather.csv`에 저장(git 미추적). 1차 914일(2024-01~2026-07) → **2차 확장(7/3): 3,836일(2016-01-01~2026-07-02, 10.5년)**, 여러 파일(120개월 단위 조회 제한) 합쳐서 처리하도록 `import_kma.py`가 다중 경로 인자 지원.
 - `src/ml/generate_data.py`(합성 데이터)는 `predict.py`가 `data/raw/seoul_weather.csv`를 못 찾을 때(예: Streamlit Cloud처럼 raw CSV 미포함 배포 환경)의 폴백으로만 유지 — CSV 있으면 자동으로 실데이터 사용.
 
 ## Phase 1 산출물
-- `src/ml/import_kma.py` — KMA ASOS CSV(EUC-KR) → `data/raw/seoul_weather.csv` 변환 (`python src/ml/import_kma.py <kma_csv_경로>`)
+- `src/ml/import_kma.py` — KMA ASOS CSV(EUC-KR, 여러 파일 지원) → `data/raw/seoul_weather.csv` 변환 (`python src/ml/import_kma.py <경로1> [<경로2> ...]`)
 - `src/ml/generate_data.py` — 합성 데이터 생성(raw CSV 없을 때 폴백) (`python src/ml/generate_data.py`)
 - `src/ml/eda.py` — 결측치/분포/상관관계 EDA, `notebooks/figures/`에 그래프 저장 (`python src/ml/eda.py`)
 - `src/ml/predict.py` — 피처 구성 + 모델 3개 비교 + `predict_tomorrow()` (contract.md 스키마 반환, Track B가 호출할 함수)
 - `src/ml/train.py` — CLI 리포트 + pkl 저장 (`python -m src.ml.train`)
 - `app.py` — Streamlit 데모 (슬라이더 입력 → 내일 최고/최저기온·강수확률 + 모델 비교 차트)
 - `tests/test_predict.py` — contract 스키마 self-check (`python tests/test_predict.py`)
-- 결과(실데이터 기준, 7/3 재측정): 회귀 최고=LinearRegression(MAE≈2.63°C), 분류 최고=LogisticRegression(Acc≈0.78).
+- 결과(10.5년 실데이터 기준, 7/3 재측정): 회귀 최고=LinearRegression(MAE≈2.50°C), 분류 최고=LogisticRegression(Acc≈0.71).
+
+## Phase 2 산출물
+- `src/dl/sequences.py` — 최근 7일 시퀀스(MinMaxScaler 정규화) 생성 (`SEQ_LEN=7`)
+- `src/dl/train.py` — LSTM(32) 학습(회귀 2출력+분류 1출력 멀티헤드) + ML 대비 비교 그래프 저장 (`python -m src.dl.train`)
+- `src/dl/predict.py` — `load_models()`/`predict_tomorrow()` (ML과 동일 인터페이스, contract.md 스키마, `source: "lstm"`)
+- `tests/test_dl_predict.py` — contract 스키마 self-check
+- `app.py`에 Phase 2 섹션 추가 — LSTM 예측 metric + `notebooks/figures/ml_vs_dl.png` 비교 차트
+- 결과(10.5년 데이터, 7/3 재측정): **LSTM이 ML을 역전** — 회귀 MAE: LSTM 2.41°C vs ML(LinearRegression) 2.50°C. 분류 Accuracy: LSTM 0.706 vs ML(LogisticRegression) 0.714(거의 동률). 데이터 2.5년→10.5년 확장 후 LSTM이 우위 — "DL은 데이터 충분해야 진가 발휘" 보고서 스토리로 활용.
 
 ## 세션 자동저장 설정 (완료, 7/3)
 - **양쪽 트랙 모두** `.claude/settings.local.json`에 `SessionEnd` 훅 설정됨(gitignore됨, 폴더별 개별 설정 — git worktree라 폴더가 다르면 Claude Code가 각각 별개 프로젝트로 인식하기 때문에 양쪽에 각각 걸어야 함).
