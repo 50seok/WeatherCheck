@@ -6,6 +6,8 @@ data/raw/*
 !data/raw/.gitkeep
 *.h5
 *.keras
+*.pkl
+notebooks/figures/
 chroma_db/
 .ipynb_checkpoints/
 .claude/settings.local.json
