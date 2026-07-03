@@ -4,10 +4,14 @@ __pycache__/
 .env
 data/raw/*
 !data/raw/.gitkeep
+!data/raw/seoul_weather.csv
 *.h5
 *.keras
+!src/dl/models/lstm_model.keras
 *.pkl
-notebooks/figures/
+notebooks/figures/*
+!notebooks/figures/.gitkeep
+!notebooks/figures/*.png
 chroma_db/
 .ipynb_checkpoints/
 .claude/settings.local.json
