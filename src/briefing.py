@@ -18,14 +18,14 @@ def _build_query(prediction: dict) -> str:
         triggers.append("폭염")
     if prediction["temp_min"] <= 3:
         triggers.append("한파")
-    return " ".join(triggers) or "오늘 날씨 옷차림"
+    return " ".join(triggers) or "내일 날씨 옷차림"
 
 
 def generate_briefing(prediction: dict) -> str:
     hits = search(_build_query(prediction))
     context = "\n\n".join(f"[{doc_id}]\n{text}" for doc_id, text in hits)
 
-    prompt = f"""오늘 서울 날씨 예측: 최고 {prediction['temp_max']}°C, 최저 {prediction['temp_min']}°C, 강수확률 {prediction['rain_prob'] * 100:.0f}%
+    prompt = f"""내일({prediction['date']}) 서울 날씨 예측: 최고 {prediction['temp_max']}°C, 최저 {prediction['temp_min']}°C, 강수확률 {prediction['rain_prob'] * 100:.0f}%
 
 참고 문서:
 {context}
