@@ -18,17 +18,18 @@
 | B | RAG·브리핑·봇 | 미착수 (mock으로 병렬 가능) | `C:\Mark42\WeatherCheck-rag` | feature/rag-briefing |
 
 ## 알려진 이슈
-- **Phase 1 데이터는 합성 데이터**: data.kma.go.kr가 로그인+수동 다운로드 필요해 자동 수집 불가 → `src/ml/generate_data.py`가 서울 월별 기후 평년값 기반 2년치 합성 CSV(`data/raw/seoul_weather.csv`, git 미추적) 생성. 실데이터 확보 시 같은 컬럼 스키마(date/temp_avg/temp_max/temp_min/humidity/pressure/wind_speed/precip)로 교체하면 나머지 파이프라인(EDA/train/predict/app) 그대로 작동.
-- Phase 2(LSTM) 시작 시 합성 데이터를 실데이터로 교체할지 결정 필요.
+- ~~Phase 1 데이터는 합성 데이터~~ → **해결 (7/3)**: data.kma.go.kr ASOS 일자료(서울/108, 2024-01-01~2026-07-02, 914일) 수동 다운로드 → `src/ml/import_kma.py`로 EUC-KR CSV를 스키마(date/temp_avg/temp_max/temp_min/humidity/pressure/wind_speed/precip) 변환해 `data/raw/seoul_weather.csv`에 저장(git 미추적, 결측 3건은 보간).
+- `src/ml/generate_data.py`(합성 데이터)는 `predict.py`가 `data/raw/seoul_weather.csv`를 못 찾을 때(예: Streamlit Cloud처럼 raw CSV 미포함 배포 환경)의 폴백으로만 유지 — CSV 있으면 자동으로 실데이터 사용.
 
 ## Phase 1 산출물
-- `src/ml/generate_data.py` — 합성 데이터 생성 (`python src/ml/generate_data.py`)
+- `src/ml/import_kma.py` — KMA ASOS CSV(EUC-KR) → `data/raw/seoul_weather.csv` 변환 (`python src/ml/import_kma.py <kma_csv_경로>`)
+- `src/ml/generate_data.py` — 합성 데이터 생성(raw CSV 없을 때 폴백) (`python src/ml/generate_data.py`)
 - `src/ml/eda.py` — 결측치/분포/상관관계 EDA, `notebooks/figures/`에 그래프 저장 (`python src/ml/eda.py`)
 - `src/ml/predict.py` — 피처 구성 + 모델 3개 비교 + `predict_tomorrow()` (contract.md 스키마 반환, Track B가 호출할 함수)
 - `src/ml/train.py` — CLI 리포트 + pkl 저장 (`python -m src.ml.train`)
 - `app.py` — Streamlit 데모 (슬라이더 입력 → 내일 최고/최저기온·강수확률 + 모델 비교 차트)
 - `tests/test_predict.py` — contract 스키마 self-check (`python tests/test_predict.py`)
-- 결과: 회귀 최고=RandomForest(MAE≈3.0°C), 분류 최고=LogisticRegression(Acc≈0.75) — 합성 데이터 기준, 실데이터 교체 시 재측정 필요.
+- 결과(실데이터 기준, 7/3 재측정): 회귀 최고=LinearRegression(MAE≈2.63°C), 분류 최고=LogisticRegression(Acc≈0.78).
 
 ## 세션 자동저장 설정 (완료, 7/3)
 - **양쪽 트랙 모두** `.claude/settings.local.json`에 `SessionEnd` 훅 설정됨(gitignore됨, 폴더별 개별 설정 — git worktree라 폴더가 다르면 Claude Code가 각각 별개 프로젝트로 인식하기 때문에 양쪽에 각각 걸어야 함).
