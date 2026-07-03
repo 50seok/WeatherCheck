@@ -8,3 +8,4 @@ data/raw/*
 *.keras
 chroma_db/
 .ipynb_checkpoints/
+.claude/settings.local.json
