@@ -153,11 +153,14 @@ async def check_schedule():
     for channel_id, target in _load_schedule().items():
         if target == hhmm and _sent_today.get(channel_id) != today:
             channel = client.get_channel(int(channel_id))
-            if channel:
-                pred = get_prediction()
-                text = generate_briefing(pred)
-                await channel.send(f"{format_header(pred)}\n{text}")
-                _sent_today[channel_id] = today
+            if channel is None:
+                print(f"[check_schedule] channel {channel_id} not found in cache!", flush=True)
+                continue
+            pred = get_prediction()
+            text = generate_briefing(pred)
+            await channel.send(f"{format_header(pred)}\n{text}")
+            _sent_today[channel_id] = today
+            print(f"[check_schedule] sent to {channel_id}", flush=True)
 
 
 if __name__ == "__main__":
