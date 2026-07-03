@@ -38,24 +38,35 @@ def _save_schedule(schedule: dict) -> None:
         json.dump(schedule, f, ensure_ascii=False, indent=2)
 
 
-def extract_time(text: str) -> str | None:
-    """자연어 문장에서 24시간제 HH:MM 알림 시각 추출. 없으면 None."""
+def classify_message(text: str) -> tuple[str, str | None]:
+    """메시지 의도를 분류. 키워드 매칭 대신 자연스러운 표현도 인식하도록 Claude에게 위임.
+
+    반환: (intent, time) — intent는 "weather"/"schedule"/"none", time은 schedule일 때만 HH:MM 또는 None.
+    """
     resp = Anthropic().messages.create(
         model=TIME_MODEL,
-        max_tokens=10,
+        max_tokens=20,
         messages=[{
             "role": "user",
             "content": (
-                "다음 문장에서 사용자가 원하는 하루 중 알림 시각을 24시간제 HH:MM 형식으로만 답해. "
-                "시각 정보가 없으면 NONE만 답해. 다른 말은 절대 하지 마.\n\n"
-                f"문장: {text}"
+                "디스코드 채널의 메시지 하나를 아래 세 종류 중 하나로 분류해서, "
+                "반드시 지정된 형식으로만 답해(다른 말 절대 하지 마):\n"
+                "1. 오늘/내일 날씨, 우산, 옷차림 등을 묻는 질문 -> WEATHER\n"
+                "2. 매일 정해진 시각에 브리핑을 자동으로 받고 싶다는 요청 -> SCHEDULE HH:MM"
+                "(24시간제. 시각이 명시 안 됐으면 HH:MM 자리에 NONE)\n"
+                "3. 그 외 날씨/알림과 무관한 잡담 -> NONE\n\n"
+                f"메시지: {text}"
             ),
         }],
     )
     result = resp.content[0].text.strip()
-    if len(result) != 5 or result[2] != ":":
-        return None
-    return result
+    if result.startswith("SCHEDULE"):
+        parts = result.split()
+        hhmm = parts[1] if len(parts) > 1 else "NONE"
+        return "schedule", (hhmm if len(hhmm) == 5 and hhmm[2] == ":" else None)
+    if result.startswith("WEATHER"):
+        return "weather", None
+    return "none", None
 
 
 @client.event
@@ -69,18 +80,19 @@ async def on_message(message: discord.Message):
     if message.author == client.user:
         return
 
-    if "알림" in message.content:
-        hhmm = extract_time(message.content)
+    intent, hhmm = classify_message(message.content)
+
+    if intent == "schedule":
         if hhmm:
             schedule = _load_schedule()
             schedule[str(message.channel.id)] = hhmm
             _save_schedule(schedule)
             await message.channel.send(f"✅ 매일 {hhmm}에 이 채널로 브리핑을 보내드릴게요.")
         else:
-            await message.channel.send("몇 시에 보내드릴까요? 예: '알림 매일 아침 8시에 보내줘'")
+            await message.channel.send("몇 시에 보내드릴까요? 예: '아침 8시에 알려줘'")
         return
 
-    if "날씨" in message.content:
+    if intent == "weather":
         async with message.channel.typing():
             text = generate_briefing(get_prediction())
         await message.channel.send(text)
