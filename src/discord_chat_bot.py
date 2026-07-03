@@ -40,8 +40,8 @@ def format_header(prediction: dict) -> str:
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
-_sent_today: dict[str, str] = {}
-_prepared: dict[str, tuple[str, str]] = {}  # channel_id -> (date, 미리 만들어둔 메시지)
+_sent_today: dict[tuple[str, str], str] = {}  # (channel_id, target) -> date
+_prepared: dict[tuple[str, str], tuple[str, str]] = {}  # (channel_id, target) -> (date, 미리 만들어둔 메시지)
 
 
 def _minus_minutes(hhmm: str, minutes: int) -> str:
@@ -141,7 +141,7 @@ async def on_message(message: discord.Message):
             if now.strftime("%H:%M") >= detail:
                 # ponytail: 등록 처리(Claude 분류 등)에 걸리는 시간 동안 목표 시각이 이미 지나가버리는 레이스 대응 -> 오늘자는 바로 발송
                 await message.channel.send(_build_daily_message())
-                _sent_today[channel_id] = now.strftime("%Y-%m-%d")
+                _sent_today[(channel_id, detail)] = now.strftime("%Y-%m-%d")
         else:
             await message.channel.send("몇 시에 보내드릴까요? 예: '아침 8시에 알려줘'")
         return
@@ -168,24 +168,25 @@ async def check_schedule():
     hhmm = now.strftime("%H:%M")
     today = now.strftime("%Y-%m-%d")
     for channel_id, target in _load_schedule().items():
-        if _sent_today.get(channel_id) == today:
+        key = (channel_id, target)
+        if _sent_today.get(key) == today:
             continue
 
         # 정각 3분 전: 미리 브리핑을 만들어 캐시(정각에 지연 없이 보내기 위함)
-        if hhmm == _minus_minutes(target, PREP_MINUTES) and _prepared.get(channel_id, (None,))[0] != today:
-            _prepared[channel_id] = (today, _build_daily_message())
-            print(f"[check_schedule] prepared for {channel_id}", flush=True)
+        if hhmm == _minus_minutes(target, PREP_MINUTES) and _prepared.get(key, (None,))[0] != today:
+            _prepared[key] = (today, _build_daily_message())
+            print(f"[check_schedule] prepared for {key}", flush=True)
 
         if hhmm == target:
             channel = client.get_channel(int(channel_id))
             if channel is None:
                 print(f"[check_schedule] channel {channel_id} not found in cache!", flush=True)
                 continue
-            cached_date, cached_text = _prepared.get(channel_id, (None, None))
+            cached_date, cached_text = _prepared.get(key, (None, None))
             text = cached_text if cached_date == today else _build_daily_message()  # 준비 못 했으면 그 자리에서 생성
             await channel.send(text)
-            _sent_today[channel_id] = today
-            print(f"[check_schedule] sent to {channel_id}", flush=True)
+            _sent_today[key] = today
+            print(f"[check_schedule] sent to {key}", flush=True)
 
 
 if __name__ == "__main__":
