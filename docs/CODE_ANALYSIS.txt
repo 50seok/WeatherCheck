@@ -1,0 +1,696 @@
+================================================================================
+WeatherCheck 전체 코드 분석
+생성일: 2026-07-04
+대상: 모든 .py 파일 (src/, app.py, tests/)
+================================================================================
+
+목차
+----
+1. app.py                        — Streamlit 데모 UI
+2. src/predictor.py               — Track B 진입점 (예측 단일 창구)
+3. src/ml/generate_data.py        — 합성 기상 데이터 생성
+4. src/ml/import_kma.py           — 기상청 실데이터 변환
+5. src/ml/eda.py                  — 탐색적 데이터 분석
+6. src/ml/predict.py              — ML 학습/예측 (Phase 1)
+7. src/ml/train.py                — ML CLI 학습 + 진단 그래프
+8. src/dl/sequences.py            — LSTM 시퀀스 변환
+9. src/dl/predict.py              — DL 예측 진입점 (Phase 2)
+10. src/dl/train.py               — LSTM 학습 + ML 비교
+11. src/rag.py                    — RAG 검색 (Chroma + TF-IDF)
+12. src/llm.py                    — 로컬 sLLM 호출 (Ollama)
+13. src/briefing.py               — RAG+LLM 브리핑 생성
+14. src/traffic.py                — 교통 API 연동 (TMAP/ODsay)
+15. src/feedback.py               — 개인 체감 피드백 학습
+16. src/seed_feedback.py          — 피드백 더미 데이터 시딩
+17. src/discord_bot.py            — 디스코드 웹훅 발송 (단방향)
+18. src/discord_chat_bot.py       — 디스코드 대화형 봇 (메인 앱)
+19. tests/test_predict.py         — ML self-check
+20. tests/test_dl_predict.py      — DL self-check
+
+전체 데이터 흐름 요약
+--------------------
+[data.kma.go.kr CSV] --import_kma.py--> data/raw/seoul_weather.csv
+                                              |
+                        (없으면 generate_data.py가 합성 데이터로 대체)
+                                              |
+                  +---------------------------+---------------------------+
+                  |                                                       |
+            src/ml/predict.py (LR/RF/XGB, 슬라이더 입력 필요)      src/dl/predict.py (LSTM, 최근 7일 시계열)
+                  |                                                       |
+                  +-----------------------> src/predictor.py <------------+
+                                          (get_prediction: LSTM 사용,
+                                           get_today_observed: 오늘 관측값)
+                                                    |
+                              +---------------------+---------------------+
+                              |                                           |
+                       src/briefing.py                              app.py (Streamlit)
+                       (rag.search + llm.chat)                       (ML/DL 비교 시각화)
+                              |
+                       src/discord_chat_bot.py
+                       (자연어 분류 -> 의도별 핸들러 -> 브리핑/교통/피드백)
+
+
+================================================================================
+1. app.py
+================================================================================
+역할: Streamlit 기반 데모 페이지. 사용자가 슬라이더로 "오늘" 기상값을 입력하면
+      ML(3종 비교 후 최고 모델)과 DL(LSTM)의 "내일" 예측을 나란히 보여준다.
+
+주요 흐름:
+- @st.cache_resource get_models() / get_dl_models()
+    -> train_all()(ML)과 load_dl_models()(DL)을 Streamlit 세션 내 1회만 실행하도록 캐싱.
+- 사이드바 폼(weather_input): temp_avg/temp_max/temp_min/humidity/pressure/
+  wind_speed/precip_yesterday 7개 슬라이더 입력을 받아 predict_tomorrow(ML)에 전달.
+- 결과 3분할 컬럼(내일 최고/최저기온, 강수확률) + 회귀 MAE·분류 Accuracy
+  bar_chart로 3개 모델(LinearRegression/RandomForest/XGBoost) 성능 비교.
+- 하단 "Phase 2: LSTM 예측" 섹션: DL은 슬라이더 입력이 필요 없음(최근 7일 데이터
+  자체의 시계열 패턴 사용) → predict_dl(get_dl_models())로 별도 표시.
+- notebooks/figures/ml_vs_dl.png 이미지로 ML 최고 모델 vs LSTM MAE 비교 시각화.
+
+함수 없음(스크립트 최상위 흐름 전부), Streamlit 특유의 "실행마다 전체 스크립트
+재실행" 모델을 캐시 데코레이터로 완화.
+
+
+================================================================================
+2. src/predictor.py
+================================================================================
+역할: "Track B"(RAG/브리핑/디스코드봇)가 예측값을 얻는 **단일 진입점**.
+      실제 예측 로직(ML/DL)을 몰라도 이 모듈만 import하면 됨 — 트랙 간 결합도를
+      낮추는 파사드 역할.
+
+get_prediction() -> dict
+- src.dl.predict.load_models() + predict_tomorrow()을 호출해 "내일" 예측 반환.
+- LSTM을 최종 채택(주석: "MAE 2.41°C — ML 대비 최고 성능").
+- 반환 스키마(docs/contract.md 단일 진실): {date, temp_max, temp_min, rain_prob, source}
+
+get_today_observed() -> dict
+- 예측이 아니라 "오늘"의 가장 최근 실측 데이터를 그대로 반환.
+- LSTM은 구조상 1일 뒤(내일)만 예측 가능하므로, "오늘 날씨 어때?" 같은 질문에
+  답하려면 예측이 아닌 관측값이 필요 — 그래서 별도 함수로 분리.
+- rain_prob은 확률이 아니라 0.0/1.0 이진값(그날 실제 강수 여부를 그대로 표시).
+
+__main__ 블록: get_prediction() 결과에 대해 스키마·논리적 제약(최고>최저, 확률
+0~1 범위, source="lstm")을 assert로 자체 검증하는 self-check.
+
+
+================================================================================
+3. src/ml/generate_data.py
+================================================================================
+역할: 기상청(data.kma.go.kr)이 로그인+수동 다운로드만 지원해 자동 수집이
+      불가능하므로, 서울 기후 계절 패턴 기반의 **합성 데이터**로 대체.
+
+상수:
+- MONTHLY_TEMP_AVG/MONTHLY_RANGE/MONTHLY_RAIN_PROB: 월별(1~12월) 평균기온·
+  일교차·강수확률 근사치(기상청 평년값 참고), 12개 원소 리스트.
+
+generate(start="2024-01-01", days=730, seed=42) -> pd.DataFrame
+- numpy Generator(seed 고정으로 재현 가능)로 날짜별 시계열 생성:
+  1. temp_avg = 월별 평균 + 정규분포 노이즈(σ=2.5)
+  2. day_range(일교차) = 월별 일교차 + 노이즈(σ=1.0) → temp_max/min = temp_avg ± range/2
+  3. rain = 월별 강수확률로 베르누이 시행 → precip = 비 오는 날만 감마분포(강도), 나머진 0
+  4. humidity = 55 + 20*rain(비 오면 습도↑) + 노이즈, 20~100 클리핑
+  5. pressure = 1015 - 0.15*temp_avg(기온-기압 음의 상관) + 노이즈
+  6. wind_speed = 감마분포
+- 반환 컬럼: date, temp_avg, temp_max, temp_min, humidity, pressure, wind_speed, precip
+  (KMA 실데이터와 동일 스키마 — 실데이터 확보 시 CSV만 교체하면 이 함수는 불필요)
+
+__main__: CSV로 저장(data/raw/seoul_weather.csv), 행 수 출력.
+
+
+================================================================================
+4. src/ml/import_kma.py
+================================================================================
+역할: data.kma.go.kr에서 받은 ASOS 일자료 원본 CSV(EUC-KR 인코딩)를
+      프로젝트 표준 스키마 CSV로 변환. CLI 스크립트.
+
+상수: KMA_COLUMNS — KMA 원본 CSV의 실제 컬럼 순서(station, station_name, date,
+      temp_avg, temp_min, temp_max, precip, wind_speed, humidity, pressure).
+      원본은 헤더가 한글이라 pandas가 못 읽으므로 names=로 직접 지정.
+
+load_one(src_path) -> pd.DataFrame
+- encoding="euc-kr"로 읽고 KMA_COLUMNS 이름 부여, header=0(원본 헤더 행 스킵).
+- precip 결측치(무강수일 때 빈값으로 오는 KMA 특성) → 0으로 채움.
+- 표준 8개 컬럼만 선택해 반환.
+
+convert(src_paths: list[str]) -> pd.DataFrame
+- 기간이 길어 여러 파일로 나눠 받은 경우를 위해 여러 경로를 concat.
+- date 기준 중복 제거 + 정렬.
+- 나머지 컬럼(관측치)의 결측치(예: 풍속 3건 등 소수 결측)를 양방향 보간
+  (interpolate(limit_direction="both"))으로 채움.
+
+__main__: sys.argv로 CSV 경로들 받아 변환 후 data/raw/seoul_weather.csv 저장,
+날짜 범위 출력.
+
+
+================================================================================
+5. src/ml/eda.py
+================================================================================
+역할: 탐색적 데이터 분석(EDA) — 결측치/기술통계 콘솔 출력 + 시각화 2종 저장.
+
+run()
+- data/raw/seoul_weather.csv 로드.
+- 결측치 개수(isna().sum())·기술통계(describe()) 콘솔 출력.
+- 그래프 1: 2단 subplot — 상단은 일별 기온(temp_avg 선 + temp_min~temp_max
+  음영), 하단은 일별 강수량 막대그래프. → notebooks/figures/timeseries.png
+- 그래프 2: 수치형 7개 컬럼 간 상관관계 히트맵(seaborn, coolwarm, 중심값 0).
+  → notebooks/figures/correlation.png
+- 한글 폰트(Malgun Gothic, Windows) 설정, matplotlib backend="Agg"(GUI 없이
+  저장 전용, 서버/CLI 환경 대응).
+
+
+================================================================================
+6. src/ml/predict.py
+================================================================================
+역할: Phase 1 ML의 핵심 모듈. 데이터 로드, 피처 엔지니어링, 모델 3종
+      학습/비교, 예측 함수까지 전부 포함.
+
+상수:
+- FEATURES: 예측 입력 피처 7개(temp_avg, temp_max, temp_min, humidity,
+  pressure, wind_speed, precip_yesterday) — "오늘" 값들로 "내일"을 맞추는 구조.
+- REG_MODELS: {"LinearRegression", "RandomForest"(200 트리), "XGBoost"(200
+  트리)} — 각각 팩토리 함수(lambda)로 지연 생성, random_state=42 고정.
+- CLF_MODELS: {"LogisticRegression"(max_iter=1000), "RandomForest",
+  "XGBoost"(eval_metric="logloss")} — 강수 여부(이진분류) 3종.
+
+load_data() -> pd.DataFrame
+- data/raw/seoul_weather.csv가 있으면 그걸 로드, 없으면(예: Streamlit Cloud
+  배포처럼 git 미추적 데이터가 없는 환경) generate_data.generate()로 즉석 생성.
+  → 실데이터 확보 시 CSV만 두면 자동으로 그걸 쓰는 설계.
+
+build_features(df) -> pd.DataFrame
+- date 정렬 후 파생 피처 생성:
+  - precip_yesterday = 어제 강수량(shift(1))
+  - temp_max_tomorrow / temp_min_tomorrow = 내일 기온(shift(-1)) — 회귀 타깃
+  - rain_tomorrow = 내일 강수 여부(precip.shift(-1) > 0) — 분류 타깃
+- shift로 생긴 첫/끝 행 NaN을 dropna()로 제거.
+
+_importance(model) -> dict | None
+- 학습된 모델에서 피처 중요도 추출. 트리 계열(feature_importances_ 속성)과
+  선형 계열(coef_ 속성, 다중클래스 시 첫 행만·절댓값)을 모두 지원하는
+  범용 헬퍼. 어느 쪽도 없으면 None.
+
+train_all(df=None) -> dict
+- 데이터 없으면 load_data()로 로드 후 build_features 적용.
+- train_test_split(test_size=0.2, shuffle=False) — 시계열이라 셔플 없이
+  시간순으로 앞 80%/뒤 20% 분리(미래 데이터 누수 방지).
+- 회귀 3종 각각: 학습 → train/test MAE 계산 → 최저 MAE 모델을 best_reg_name으로 채택.
+- 분류 3종 각각: 학습 → train/test Accuracy 계산 → 최고 Accuracy 모델을
+  best_clf_name으로 채택.
+- **최종 배포 모델**은 best 모델 "종류"로 **전체 데이터**(train+test 다시 합쳐)를
+  재학습(reg_max, reg_min, clf) — 평가는 분리된 test로, 배포는 전체 데이터 활용.
+- 반환 dict: 성능표(train/test 각각), best 모델명, 학습된 모델 3개, 진단
+  그래프용 원본 예측값/피처중요도까지 전부 포함 — src/ml/train.py가 그래프
+  그릴 때 재사용.
+
+predict_tomorrow(models, temp_avg, temp_max, temp_min, humidity, pressure,
+                  wind_speed, precip_yesterday, target_date=None) -> dict
+- 입력 7개 값을 FEATURES 순서의 1행 DataFrame으로 구성.
+- reg_max/reg_min으로 내일 최고/최저기온 예측, clf.predict_proba로 강수확률(클래스 1 확률).
+- target_date 없으면 내일 날짜 자동 계산.
+- docs/contract.md 표준 스키마({date, temp_max, temp_min, rain_prob, source})로 반환.
+  source는 최고 회귀 모델명의 소문자(예: "xgboost").
+
+
+================================================================================
+7. src/ml/train.py
+================================================================================
+역할: CLI 실행용 — 모델 비교 리포트 출력, 최종 모델 pkl 저장, 진단 그래프 4종 생성.
+
+plot_overfit_check(result)
+- 회귀 MAE·분류 Accuracy를 train/test 나란히 막대그래프로 비교 — 격차가 크면
+  과적합 신호. -> overfit_check.png
+
+plot_confusion_matrix(result)
+- 강수 분류 혼동행렬(ConfusionMatrixDisplay) — Accuracy 하나로는 안 보이는
+  "비 옴" 클래스의 recall(놓치는 비율)을 시각적으로 확인. 콘솔에
+  classification_report(Precision/Recall/F1)도 출력. -> confusion_matrix.png
+
+plot_residuals(result)
+- 예측 vs 실제 산점도(y=x 기준선 포함) + 잔차(실제-예측) 히스토그램 — MAE
+  숫자 하나로는 안 보이는 구간별 편향(예: 특정 온도대에서 과대/과소 예측)
+  확인용. -> residuals.png
+
+plot_feature_importance(result)
+- 회귀/분류 각각의 피처 중요도를 수평 막대그래프로 정렬 표시 — 보고서
+  분석 섹션(어떤 기상 변수가 예측에 기여하는지)용. -> feature_importance.png
+
+run()
+- train_all() 실행 → 콘솔에 train/test 성능표 출력 → best 모델 3개
+  (best_regressor_max/min.pkl, best_classifier.pkl) joblib.dump로 저장 →
+  진단 그래프 4종 순차 생성.
+- 실행: `python -m src.ml.train` (project root 기준, 모듈 경로 import 때문에
+  파일 직접 실행 대신 -m 필요).
+
+
+================================================================================
+8. src/dl/sequences.py
+================================================================================
+역할: 일별 시계열 DataFrame을 LSTM 입력 형태(3차원 텐서)로 변환.
+
+상수: SEQ_LEN=7(최근 7일을 보고 다음날 예측), FEATURES=7개 기상 변수
+      (ML의 FEATURES와 유사하나 precip_yesterday 대신 precip 그 자체 사용
+      — 시계열이라 "어제 값"이 시퀀스 안에 자연히 포함됨).
+
+build_sequences(df, seq_len=SEQ_LEN) -> (X, y_reg, y_rain, scaler)
+- date 정렬 후 MinMaxScaler로 전체 데이터를 0~1 정규화(LSTM은 스케일에 민감).
+- 슬라이딩 윈도우: i번째부터 seq_len일치를 X, 그 다음날(i+seq_len)의
+  [temp_max, temp_min]을 y_reg, 그날 강수 여부(precip>0)를 y_rain으로 묶어
+  차례로 리스트에 추가 → numpy 배열로 변환.
+- ponytail 주석: 스케일러를 전체 데이터에 fit(약한 data leakage)은 데이터가
+  914행뿐이라 감수할 만한 수준이며, 데이터가 대폭 늘면 train만으로 fit하도록
+  분리해야 한다고 명시(현재 알려진 한계 + 업그레이드 조건 기록).
+
+
+================================================================================
+9. src/dl/predict.py
+================================================================================
+역할: Track B(app.py 등)가 호출할 LSTM 예측 진입점. ML의 predict.py와
+      인터페이스를 맞춤(load_models() -> predict_tomorrow(models, ...)).
+
+상수: MODEL_PATH = "src/dl/models/lstm_model.keras"
+
+load_models() -> dict
+- load_data()(ML 모듈 재사용)로 원본 데이터 로드.
+- build_sequences(df)로 스케일러만 재현(학습 때와 동일 정규화 파라미터 필요).
+- 저장된 모델 파일이 없으면 즉석에서 train_lstm() 실행(최초 실행 시 자동 학습).
+- try/except로 모델 로드 시도 — 실패하면(주석: 배포 환경의 tensorflow/keras
+  버전이 로컬과 달라 Keras 3 저장 포맷이 마이너 버전 간에도 깨질 수 있음)
+  **그 자리에서 현재 설치된 버전으로 재학습**해 저장/로드 버전 불일치 문제를
+  구조적으로 회피(재학습 = 저장과 로드가 항상 같은 버전이 됨).
+- 반환: {model, scaler, df, source="lstm"}
+
+predict_tomorrow(models, target_date=None) -> dict
+- df에서 최신 SEQ_LEN(7)일치 FEATURES만 추출 → scaler로 정규화 →
+  (1, 7, 7) 형태로 reshape해 모델 입력.
+- model.predict()가 멀티아웃풋([temp_reg, rain_pred]) 반환 → temp_max/min,
+  rain_prob 추출.
+- ML의 predict_tomorrow와 달리 **함수 입력 인자가 없음**(오늘 기상값을
+  받지 않음) — 이는 LSTM이 "최근 7일 시계열 패턴"만으로 예측하는 모델
+  구조이기 때문(설계 의도, 버그 아님).
+- docs/contract.md 동일 스키마로 반환.
+
+
+================================================================================
+10. src/dl/train.py
+================================================================================
+역할: Phase 2 — LSTM 학습 + ML 대비 비교 그래프 생성. CLI 스크립트.
+
+build_model(seq_len, n_features) -> keras.Model
+- 함수형 API: Input(seq_len, n_features) → LSTM(32 유닛) → Dense(16, relu)
+  → 2개 출력 헤드로 분기:
+  - reg_out: Dense(2) — [temp_max, temp_min] 회귀(활성화 없음, 선형)
+  - rain_out: Dense(1, sigmoid) — 강수 확률(이진분류)
+- 멀티태스크 학습: compile(loss={"temp": "mse", "rain": "binary_crossentropy"})
+  — 하나의 LSTM 인코더를 회귀+분류 두 과제가 공유(피처 재사용, 파라미터 절약).
+
+run()
+- load_data() → build_sequences()로 X/y_reg/y_rain 생성.
+- 80/20 시간순 분리(셔플 없음, ML과 동일 원칙).
+- model.fit(): validation_split=0.1, epochs=50, batch_size=16,
+  EarlyStopping(patience=5, restore_best_weights=True)로 과적합 방지 +
+  최적 가중치 복원.
+- 모델 저장(lstm_model.keras) 후 test set으로 MAE(최고/최저기온)·
+  Accuracy(강수, threshold=0.5) 산출.
+- train_all(df)(ML)도 같은 df로 호출해 **동일 데이터 기준 ML vs LSTM 비교**를
+  공정하게 수행.
+- 콘솔에 비교표 출력 + 그래프 2분할(학습곡선 loss/val_loss, ML 최고 모델
+  vs LSTM MAE 막대그래프) → notebooks/figures/ml_vs_dl.png 저장.
+- 실행: `python -m src.dl.train`
+
+
+================================================================================
+11. src/rag.py
+================================================================================
+역할: RAG(검색증강생성)의 검색(Retrieval) 파트. data/knowledge/*.md 문서를
+      벡터 DB(Chroma)에 색인하고, 질의어와 유사한 문서를 상위 N개 반환.
+
+상수: KNOWLEDGE_DIR(data/knowledge), CHROMA_DIR(chroma_db/, PersistentClient
+      저장 경로).
+
+_load_docs() -> dict[str, str]
+- KNOWLEDGE_DIR의 모든 *.md 파일을 파일명(확장자 제외)을 key로, 본문을
+  value로 하는 dict 반환.
+
+_build_collection() -> (collection, vectorizer)
+- **임베딩 모델 선택이 핵심 설계 포인트**: Chroma 기본 임베딩(ONNX 모델
+  자동 다운로드)이 이 네트워크 환경에서 다운로드 타임아웃 발생 →
+  sklearn TfidfVectorizer(이미 프로젝트 의존성)로 대체(ponytail 주석에 근거
+  명시: "문서 수가 적어 매 검색마다 컬렉션 재구축해도 즉시 처리, 지식베이스가
+  커지면 실제 임베딩 모델로 교체").
+- TfidfVectorizer를 전체 문서 코퍼스로 fit → 문서들을 TF-IDF 벡터로 변환
+  (toarray().tolist(), Chroma가 요구하는 dense list 포맷).
+- 매 호출마다 기존 "knowledge" 컬렉션을 delete_collection 후 재생성
+  (문서가 바뀌어도 항상 최신 상태 유지 — 단, 검색마다 재구축 비용 발생.
+  문서 수가 적어 이 비용을 감수).
+
+search(query, n_results=3) -> list[tuple[str, str]]
+- _build_collection() 호출(매번 새로 구축) → query도 같은 vectorizer로
+  TF-IDF 벡터화 → collection.query()로 코사인 유사도 기반 상위 n개 검색.
+- n_results를 collection.count()로 클램핑(문서 수보다 많이 요청 시 에러 방지).
+- 반환: (문서ID, 문서본문) 튜플 리스트 — briefing.py가 이 텍스트를 LLM
+  프롬프트의 근거(context)로 삽입.
+
+__main__: "우산 강수확률" 질의로 self-check, 결과 없으면 assert 실패
+(지식 문서 색인이 비어있는 회귀를 잡는 최소 테스트).
+
+
+================================================================================
+12. src/llm.py
+================================================================================
+역할: 로컬 sLLM(Small LLM) 호출 래퍼. Claude 등 외부 API 대신 Ollama로
+      로컬 실행되는 모델을 직접 운용(과제 취지: sLLM 운용 경험).
+
+상수: OLLAMA_URL="http://localhost:11434/api/chat", MODEL="exaone3.5:7.8b"
+      (LG EXAONE 3.5, 7.8B, 한국어 특화 — 생성(브리핑)과 분류(의도 파악)
+      두 용도 모두 이 하나의 모델로 처리).
+
+chat(prompt, temperature=0.7) -> str
+- requests.post로 Ollama Chat API 호출(stream=False로 한 번에 전체 응답 수신).
+- keep_alive="30m": 봇이 하루 종일 떠있는 동안 매 호출마다 모델이 메모리에서
+  내려갔다 재로딩(수십 초 지연)되는 것을 방지하기 위한 옵션.
+- timeout=120초.
+- 파일 docstring에 실험적 근거 기록: "같은 분류 프롬프트도 기본 temperature
+  에선 답이 오락가락했는데 temperature=0으로 고정하니 안정적으로 일치함"
+  → 분류(의도 파악)처럼 정확한 라벨이 필요한 호출은 반드시 temperature=0
+  사용(discord_chat_bot.classify_message에서 실제로 그렇게 호출).
+
+__main__: 간단한 한국어 인사 요청으로 연결 확인용 self-check.
+
+
+================================================================================
+13. src/briefing.py
+================================================================================
+역할: RAG(rag.search) + LLM(llm.chat)을 결합해 "출근 전 행동 지침" 자연어
+      브리핑을 생성하는 모듈. RAG의 Generation 파트.
+
+상수: NICHE_DIR(data/knowledge/niche), NICHE_LABELS({"bike":"자전거 통근"}),
+      NICHE_DOCS({"bike":"자전거통근_노면가이드"}) — "니치"(자전거 통근 등
+      특수 통근 방식)별 라벨/문서 매핑.
+
+_build_query(prediction) -> str
+- 예측값(강수확률/일교차/최고·최저기온)을 규칙 기반으로 검색 트리거 키워드로
+  변환: rain_prob>=0.4 → "우산 강수확률", 일교차>=8도 → "일교차 옷차림",
+  temp_max>=33 → "폭염", temp_min<=3 → "한파". 해당 없으면 기본 질의
+  "내일 날씨 옷차림".
+- 즉 LLM에게 자유 질의를 맡기지 않고, **예측값 기반 결정적 규칙**으로 RAG
+  검색어를 구성 — 검색 결과의 일관성/설명가능성 확보.
+
+_ask(prompt) -> str
+- llm_chat(prompt)의 얇은 래퍼(temperature 기본값 0.7 그대로 사용 — 생성
+  작업이라 분류와 달리 약간의 다양성 허용).
+
+generate_briefing(prediction, personal_offset=None) -> str
+- _build_query로 검색어 구성 → rag.search()로 관련 문서 최대 3개 조회 →
+  "[문서ID]\n본문" 형식으로 context 문자열 구성.
+- when: prediction["source"]가 "observed"면 "오늘 서울 실측 날씨", 아니면
+  "내일(날짜) 서울 날씨 예측"으로 문구 분기.
+- personal_offset(피드백 학습 결과)가 있으면 프롬프트에 "이 사용자는 실제
+  기온보다 체감상 N°C 더 춥게/덥게 느끼는 경향" 문장을 추가해 개인화.
+- 최종 프롬프트: 날씨 수치 + RAG context + "위 문서를 근거로 2~3문장
+  자연스러운 한국어로, 이모지 섞고 근거 문서는 [문서명]으로 표시" 지시
+  → llm_chat 호출, 결과 텍스트 반환.
+- **근거 인용(citation)을 프롬프트로 강제** — RAG의 "확인 가능성" 요구를
+  충족(CLAUDE.md의 "RAG 브리핑(근거 인용)"은 컷 금지 항목).
+
+generate_niche_briefing(prediction, niche) -> str
+- 니치(예: 자전거)당 문서가 1:1로 정해져 있어 **검색 없이** 바로 해당 문서를
+  읽어(파일 직접 read) 프롬프트에 삽입 — 이유 두 가지: (1) 검색이 불필요한
+  결정적 매핑, (2) 일반 검색 풀과 섞이면 니치 특화 조언이 오염될 위험 방지.
+- 별도 섹션(디스코드봇에서 "🚲 자전거 통근 체크"로 구분 표시)으로 눈에
+  띄게 하기 위해 generate_briefing과 별개 함수로 분리.
+
+__main__: get_prediction() 결과로 두 브리핑 함수를 실제 호출해 출력하는
+통합 self-check.
+
+
+================================================================================
+14. src/traffic.py
+================================================================================
+역할: 출퇴근 소요시간 조회 — 자차(TMAP), 대중교통(ODsay) API 연동.
+
+geocode(place) -> (경도, 위도)
+- TMAP POI 검색 API로 장소명을 좌표로 변환. count=1(최상위 결과만 사용).
+- **자차/대중교통 두 API 모두 좌표가 필요**해서 지오코딩 로직을 하나로
+  통일해 재사용(중복 방지).
+
+get_driving_eta(origin, destination) -> dict
+- 출발/도착지 각각 geocode 후 TMAP 자동차 길찾기 API 호출.
+- 반환: {mode:"driving", minutes(총소요시간/60 반올림), distance_km(총거리
+  /1000, 소수1자리)}.
+
+get_transit_eta(origin, destination) -> dict
+- 동일하게 geocode 후 ODsay 대중교통 길찾기 API 호출.
+- 결과 경로가 없으면 {mode, minutes:None, transfers:None, error:"경로 없음"} 반환
+  (예외 대신 명시적 실패 표현 — 호출부(discord_chat_bot)가 이 None을 보고
+  "경로를 찾지 못했어요" 메시지로 분기).
+- 경로가 여럿이면 totalTime이 최소인 경로(min())를 선택.
+- transfers = 버스 환승 횟수 + 지하철 환승 횟수 합산.
+
+환경변수 TMAP_APP_KEY, ODSAY_API_KEY를 os.environ[...]로 직접 참조(없으면
+즉시 KeyError로 실패 — 조용한 실패 방지, .env 필수 명시).
+
+
+================================================================================
+15. src/feedback.py
+================================================================================
+역할: "개인 체감 피드백 학습"(PRD 4순위, 프로젝트 시그니처 기능). 알림 뒤
+      "추웠어/딱 좋았어/더웠어" 버튼 클릭 이력을 쌓아 사용자별 체감온도
+      보정값을 계산.
+
+상수: FEEDBACK_PATH(data/feedback.json), LAST_WEATHER_PATH(data/last_weather.json),
+      MIN_SAMPLES=3(이 개수 미만이면 보정 없이 중립), LABEL_OFFSET(라벨별
+      보정 방향·크기: cold=+2.5°C, good=0, hot=-2.5°C).
+
+_load(path)/_save(path, data)
+- JSON 파일 읽기/쓰기 공통 헬퍼(경로 없으면 빈 dict, 저장 시 디렉토리 자동 생성).
+
+save_last_weather(channel_id, prediction)
+- 피드백 버튼이 눌렸을 때 "그날 어떤 날씨였는지"를 알아야 하므로, 브리핑
+  발송 시점마다 채널별 마지막 날씨(temp_max, date)를 별도 파일에 기록.
+
+record_feedback(channel_id, label) -> bool
+- 마지막 발송 날씨 기록이 있어야만 피드백을 기록(없으면 False 반환 —
+  "발송 이력 없는 채널의 피드백"이라는 모순 상태 방지).
+- FEEDBACK_PATH의 channel_id 리스트에 {temp_max, date, feedback} 추가.
+
+get_personal_offset(channel_id) -> float | None
+- 표본이 MIN_SAMPLES(3) 미만이면 None(중립, 보정 안 함) 반환.
+- 충분하면 각 항목의 LABEL_OFFSET 평균을 반올림(소수1자리)해 반환.
+- 파일 docstring에 설계 근거 명시: "표본이 적은 프로젝트 특성상 복잡한
+  회귀 대신 라벨별 평균 보정치 — 데이터 몇 개로 회귀모델 학습하면
+  과적합이라 오히려 신뢰성이 떨어짐"(ponytail 판단: 단순 평균이 라벨=YAGNI
+  아니라 정확도상 우월한 선택).
+
+
+================================================================================
+16. src/seed_feedback.py
+================================================================================
+역할: 시연(데모)용 더미 피드백 생성 CLI. 실제 사용 며칠만으로는 개인
+      체감 학습 효과("보정값이 실제로 반영된다")를 시연하기 어려워서,
+      "실제 기온보다 춥게 느끼는 사람" 시나리오를 미리 채워 넣음(PRD 예시
+      데이터 그대로 사용).
+
+DUMMY_ENTRIES: 2026-06-25~07-04까지 10건, 대부분 "cold"(가끔 "good") 라벨
++ 해당일 temp_max 값 — 실제 record_feedback()이 만드는 것과 동일 스키마.
+
+seed(channel_id)
+- src.feedback의 내부 저장 포맷(_load/_save, FEEDBACK_PATH)을 그대로
+  재사용(import 시 noqa: F401 — private 함수 재사용에 대한 의도적 표시)해
+  DUMMY_ENTRIES를 해당 channel_id에 덮어쓰기 저장.
+
+CLI: `python -m src.seed_feedback <channel_id>` — 인자 개수 틀리면 사용법
+출력 후 sys.exit(1).
+
+
+================================================================================
+17. src/discord_bot.py
+================================================================================
+역할: 디스코드 웹훅으로 텍스트를 **단방향 발송**만 하는 최소 모듈(대화형
+      봇인 discord_chat_bot.py와 별개 — 이쪽은 메시지 수신·상태 유지가
+      필요 없어 상시 실행 프로세스가 아님).
+
+send_briefing(text)
+- 환경변수 DISCORD_WEBHOOK_URL(없으면 즉시 KeyError)로 webhook 엔드포인트에
+  urllib.request(외부 라이브러리 없이 표준 라이브러리만으로 POST)로 JSON
+  {"content": text} 전송.
+- User-Agent 헤더를 명시적으로 지정(일부 웹훅 서버가 기본 User-Agent를
+  거부하는 경우 대비 — 보수적 방어).
+
+__main__: 연결 확인용 테스트 메시지 발송.
+
+
+================================================================================
+18. src/discord_chat_bot.py
+================================================================================
+역할: 프로젝트의 **메인 실행 앱**. discord.py 기반 상시 실행 봇. 자연어
+      메시지를 sLLM으로 의도 분류 후 각 기능(날씨 브리핑/알림 스케줄/
+      교통/출근지 등록/니치 설정/채팅 정리/피드백/도움말)으로 라우팅.
+
+--- 상수/전역 상태 ---
+SCHEDULE_PATH/COMMUTE_PATH/NICHE_PATH: 채널별 설정을 저장하는 JSON 파일 경로.
+DEFAULT_CLEAR_COUNT=50(채팅 정리 기본 개수), PREP_MINUTES=3(정각 3분 전에
+미리 브리핑을 생성해두는 리드타임 — 정각에 지연 없이 발송하기 위함).
+HELP_TEXT: 도움말 전문(마크다운), 기능별 예시 문구 포함.
+WEEKDAYS_KR: 요일 한글 배열.
+_sent_today: {(channel_id, target): 마지막 발송일} — 하루 중복 발송 방지.
+_prepared: {(channel_id, target): (날짜, 설정스냅샷, 미리생성한 텍스트)} —
+정각 전 캐시된 브리핑.
+
+--- 헬퍼 함수 ---
+format_header(prediction) -> str
+- "# 오늘/내일 YYYY-MM-DD (X요일)" 마크다운 헤더 생성(디스코드에서 # 는
+  큰 글씨 헤더로 렌더링).
+
+_minus_minutes(hhmm, minutes) -> str
+- "HH:MM" 문자열에서 minutes분 뺀 시각 문자열 반환(정각 3분 전 계산용).
+
+_load_schedule()/_save_schedule() -> dict
+- 채널별 알림 설정 {channel_id: {"target":"HH:MM","user_id":int|None}} 로드/저장.
+- 하위호환: 예전엔 값이 "HH:MM" 문자열 그 자체였음(멘션 기능 추가 전) →
+  isinstance 체크로 구버전 포맷도 자동 변환해서 읽음.
+
+_load_commute()/_save_commute() -> dict
+- 채널별 출근지 {origin, destination} 로드/저장.
+
+_load_niche()/_save_niche() -> dict
+- 채널별 니치(예: "bike") 로드/저장.
+
+_settings_snapshot(channel_id) -> tuple
+- (니치, 출근지 origin, destination)의 스냅샷. 정각 3분 전 미리 만든
+  브리핑이 발송 시점까지도 여전히 유효한 설정 기준인지 비교하기 위함 —
+  준비 이후 설정이 바뀌면 캐시를 버리고 그 자리에서 재생성.
+
+--- UI 컴포넌트(discord.ui.View) ---
+SettingsView(timeout=None)
+- 니치 설정(🚲 자전거/🚗 기본)·채팅 정리 버튼 3개.
+- 클래스 docstring: "선택지가 정해져 있어 채팅 분류(LLM 호출) 대신 버튼으로
+  딸깍 처리" — LLM 호출을 아끼는 설계 선택.
+- custom_id를 고정 문자열로 지정 + timeout=None → 봇 재시작 후에도(on_ready
+  에서 client.add_view()로 재등록) 이전에 전송된 메시지의 버튼이 계속 동작.
+- set_bike/set_default: 니치 JSON 갱신 + ephemeral 응답(본인에게만 보이는
+  확인 메시지).
+- clear_chat: interaction.response.defer(ephemeral=True) 먼저 호출한 뒤
+  purge 실행 — ponytail 주석: "purge()가 3초 넘게 걸리면 응답 전 인터랙션
+  토큰이 만료돼 'Unknown interaction' 404가 남 → defer로 먼저 확인응답".
+  discord.Forbidden 예외 시 권한 안내 메시지로 폴백.
+
+FeedbackView(timeout=None)
+- 🥶/👍/🥵 버튼 3개. _record()가 record_feedback() 호출 후 결과에 따라
+  ephemeral 안내 메시지 반환(발송 이력 없으면 실패 메시지).
+
+--- 핵심 분류 함수 ---
+classify_message(text) -> (intent, detail)
+- 키워드 매칭이 아니라 **로컬 sLLM(EXAONE)에게 통째로 분류를 위임**하는
+  방식(자연스러운 표현 대응). 하나의 거대 프롬프트에 라벨 11종
+  (WEATHER_TODAY/TOMORROW/OTHER, SCHEDULE, UNSCHEDULE, TRAFFIC, COMMUTE,
+  UNCOMMUTE, NICHE, CLEAR, HELP, NONE)의 판단 규칙을 자연어로 상세 기술.
+- 프롬프트 설계상 특징:
+  - SCHEDULE: "매일"이라는 단어가 없어도 시각+알림 요청이면 무조건 분류
+    (파일 docstring/커�밋 로그의 "로컬 sLLM 회귀 수정" 대응 — 실제 사용자가
+    "매일" 없이 "8시에 알려줘"만 말해도 인식되도록 명시적으로 강조).
+  - TRAFFIC/COMMUTE: 장소명을 원문 그대로(축약 금지) 파이프(|) 구분으로
+    추출하도록 예시까지 명시("강남역"을 "강남"으로 줄이지 말 것).
+  - NICHE: '자전거' 언급이면 표현과 무관하게 무조건 BIKE, '자동차/대중교통/
+    기본' 언급 + 모드 전환 의도면 OFF.
+  - HELP: "기능/명령어/도움/도움말/help/헬프" 단어 포함 시 다른 조건보다
+    우선(최우선 규칙으로 명시) — 오분류 방지.
+- llm_chat(prompt, temperature=0) — 분류라서 반드시 결정적 출력 필요.
+- 결과 문자열을 파싱해 (intent, detail) 튜플로 정규화:
+  - SCHEDULE: "1324" 같은 4자리 숫자를 "13:24"로 변환, 형식 안 맞으면 None.
+  - CLEAR: 숫자 문자열이면 그대로, 아니면 None.
+  - TRAFFIC/COMMUTE: "|" 포함 여부로 유효성 검사.
+  - NICHE: "BIKE" 아니면 전부 "OFF"로 정규화.
+  - 나머지 고정 라벨은 소문자 intent로 그대로.
+
+--- 이벤트 핸들러 ---
+on_ready()
+- 로그인 로그 출력, 재시작 대비 View 재등록(add_view), check_schedule 루프 시작.
+
+on_message(message)
+- 자기 자신(봇) 메시지는 무시.
+- classify_message()로 의도 판별 후 if-elif 체인으로 라우팅:
+  - help: _send_settings_panel(도움말+버튼 패널 전송, 핀 고정)
+  - clear: purge(요청 메시지 자신 포함 +1개, 핀 고정 메시지는 보존) →
+    안내 메시지는 3초 후 자동 삭제(delay=3) → 권한 없으면 Forbidden 안내.
+  - schedule: detail(시각) 있으면 스케줄 등록(이미 지난 시각이면 "내일부터"
+    문구), 없으면 재질문.
+  - unschedule: 스케줄 삭제(없으면 "설정된 알림 없음" 안내).
+  - commute: origin|destination 파싱해 등록, 없으면 예시와 함께 재질문.
+  - uncommute: 출근지 설정 삭제.
+  - niche: BIKE면 등록, 아니면 삭제.
+  - traffic: get_driving_eta+get_transit_eta 동시 조회(async with typing()
+    으로 "입력 중" 표시) → 실패 시 Exception 캐치해 장소명 재확인 요청 →
+    성공 시 자차/대중교통 결과를 한 메시지로 조합(대중교통 경로 없으면
+    문구 분기).
+  - weather_other: "오늘/내일만 가능" 안내(스코프 컷 — 다일 예보 미지원).
+  - weather_today/tomorrow: get_today_observed() 또는 get_prediction() →
+    format_header + generate_briefing 조합, 니치 설정돼 있으면
+    generate_niche_briefing 섹션 추가.
+
+_build_daily_message(channel_id) -> str
+- 스케줄된 자동 발송용 메시지 조립: 헤더 + 날씨 브리핑(개인화 offset 적용)
+  + (니치 있으면) 니치 브리핑 + (출근지 등록·니치가 bike가 아니면) 교통
+  섹션. 자전거 니치는 자차/대중교통 시간이 무의미해 그 섹션 생략(주석에
+  명시).
+- save_last_weather() 호출 — 피드백 버튼이 나중에 "그날 날씨"를 알 수 있게 기록.
+- 교통 조회 실패(Exception) 시에도 메시지 조립은 계속되도록 "조회 실패"
+  문구로 폴백(다른 섹션까지 막히지 않게).
+
+check_schedule() (@tasks.loop(seconds=1))
+- 1초마다 전체 스케줄을 순회하는 상시 루프.
+- 오늘 이미 발송했으면(_sent_today) 스킵.
+- 정각 3분 전 시각과 일치 & 오늘자로 아직 준비 안 했으면 → _build_daily_message
+  실행 결과를 _prepared에 캐시(날짜, 설정스냅샷, 텍스트) — 정각에 LLM 호출로
+  인한 지연 없이 즉시 발송하기 위한 사전 준비.
+- 목표 시각과 일치하면: 채널 조회(디스코드 캐시에 없으면 스킵 + 로그) →
+  캐시가 오늘자이고 설정 스냅샷이 준비 시점과 동일하면 캐시 텍스트 사용,
+  아니면(설정이 바뀌었거나 준비 실패) 그 자리에서 재생성 → user_id 있으면
+  멘션 붙여서 FeedbackView와 함께 발송 → _sent_today 갱신.
+
+__main__: client.run(환경변수 DISCORD_BOT_TOKEN) — 봇 프로세스 시작점.
+
+
+================================================================================
+19. tests/test_predict.py
+================================================================================
+역할: src.ml.predict.predict_tomorrow()가 docs/contract.md 스키마를
+      지키는지 확인하는 self-check(pytest 프레임워크 아닌 단순 assert 스크립트).
+
+demo()
+- train_all()로 모델 학습 → 고정 입력값으로 predict_tomorrow() 호출.
+- assert 검증 항목: 반환 키 집합이 정확히 {date, temp_max, temp_min,
+  rain_prob, source}인지, 온도값이 float 타입인지, 최고>최저 논리 제약,
+  강수확률이 0~1 범위, source가 3개 모델명 중 하나(소문자)인지.
+- 실행: `python tests/test_predict.py`(project root 기준, sys.path에
+  루트를 직접 추가해 src 패키지 import 가능하게 함).
+
+
+================================================================================
+20. tests/test_dl_predict.py
+================================================================================
+역할: src.dl.predict.predict_tomorrow()의 동일한 스키마 self-check(LSTM 버전).
+
+demo()
+- load_models() → predict_tomorrow() 호출(입력 인자 없음 — LSTM 구조 특성).
+- test_predict.py와 동일한 assert 항목이나 source == "lstm" 고정 확인.
+- 실행 전 src/dl/train.py로 모델을 먼저 학습해둬야 함(주석에 명시).
+
+
+================================================================================
+설계 상 특기 사항 요약
+================================================================================
+1. ML(src/ml)과 DL(src/dl)이 동일한 인터페이스(load_models/predict_tomorrow,
+   docs/contract.md 스키마)를 공유 — app.py·predictor.py가 두 트랙을 거의
+   동일한 코드로 다룰 수 있음.
+2. RAG는 "정식" 임베딩 모델 대신 TF-IDF로 대체(네트워크 제약에 따른 실용적
+   선택, 문서량이 늘면 교체 필요 — ponytail 주석에 명시).
+3. LLM은 Claude API가 아닌 로컬 Ollama(EXAONE 3.5 7.8B) 단일 모델로
+   생성/분류 겸용 — 분류엔 temperature=0 고정이 정확도에 결정적이었음
+   (README/커밋 로그에도 실제 회귀 수정 이력 존재).
+4. 개인화(피드백 학습)는 회귀 대신 라벨별 평균(단순 통계)만 사용 — 표본이
+   적은 프로젝트 규모에 맞는 의도적 단순화.
+5. 디스코드 봇은 상시 루프(1초 주기)로 스케줄을 감시하며, 정각 3분 전
+   프리페치로 LLM 호출 지연을 발송 시점에서 숨기는 캐싱 전략을 사용.
+6. 모든 외부 연동(TMAP/ODsay/Discord Webhook/Bot Token)은 필수 환경변수로
+   강제(os.environ[...], 없으면 즉시 실패) — 조용한 오작동 방지.
+================================================================================

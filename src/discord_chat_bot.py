@@ -68,6 +68,7 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 _sent_today: dict[tuple[str, str], str] = {}  # (channel_id, target) -> date
 _prepared: dict[tuple[str, str], tuple[str, tuple, str]] = {}  # (channel_id, target) -> (date, 준비 시점 설정 스냅샷, 미리 만들어둔 메시지)
+_onboarded: set[str] = set()  # 채널별 최초 안내 패널 전송 여부(프로세스 생애주기 동안만 캐시 — 재시작 후 재검사되어도 핀이 이미 있으면 중복 전송 안 됨)
 
 
 def _minus_minutes(hhmm: str, minutes: int) -> str:
@@ -211,6 +212,14 @@ def classify_message(text: str) -> tuple[str, str | None]:
     intent: "weather_today" | "weather_tomorrow" | "weather_other" | "schedule" | "unschedule" | "traffic" | "commute" | "uncommute" | "niche" | "clear" | "help" | "none"
     detail: schedule일 땐 HH:MM(또는 None), clear일 땐 지울 개수(문자열 숫자, 없으면 None), niche일 땐 "BIKE"/"OFF", 그 외엔 None.
     """
+    # ponytail: 메시지 전체가 숫자 4자리뿐이면("2015" 등) 시각인지 아닌지 LLM이 애매하게 판단할 수 있어
+    # LLM 호출 전에 결정적으로 먼저 처리(속도도 빠르고 항상 일관됨).
+    digits = text.strip().replace(":", "")
+    if digits.isdigit() and len(digits) == 4:
+        hh, mm = int(digits[:2]), int(digits[2:])
+        if 0 <= hh <= 23 and 0 <= mm <= 59:
+            return "schedule", f"{digits[:2]}:{digits[2:]}"
+
     prompt = (
         "디스코드 채널의 메시지 하나를 아래 중 정확히 하나로 분류해서, "
         "반드시 지정된 라벨로만 답해(다른 말 절대 하지 마):\n"
@@ -219,7 +228,8 @@ def classify_message(text: str) -> tuple[str, str | None]:
         "- 오늘·내일이 아닌 다른 날(특정 요일, 모레, 며칠 뒤 등)의 날씨를 물으면 -> WEATHER_OTHER\n"
         "- 정해진 시각에 알림/브리핑을 받고 싶다는 요청 -> SCHEDULE HH:MM"
         "(이 봇은 항상 '매일' 반복 알림만 지원하니, 메시지에 \"매일\"이라는 단어가 없어도 "
-        "\"8시에 알려줘\", \"15시18분에 알려줘\", \"1518로 설정해줘\"처럼 시각+알림 요청이면 전부 SCHEDULE로 분류해. "
+        "\"8시에 알려줘\", \"15시18분에 알려줘\", \"1518로 설정해줘\", \"알림설정 2019\", \"알람 0800\"처럼 "
+        "조사(에/로) 없이 명령어와 시각이 붙어만 있어도 전부 SCHEDULE로 분류해. "
         "24시간제. \"1324\"처럼 콜론 없는 4자리 숫자로만 시각을 말해도 시각으로 인식해서 HH:MM으로 변환. "
         "시각이 명시 안 됐으면 HH:MM 자리에 NONE)\n"
         "- 매일 오던 알림을 그만 받고 싶다는 요청(취소/해지 등) -> UNSCHEDULE\n"
@@ -280,7 +290,22 @@ async def on_message(message: discord.Message):
     if message.author == client.user:
         return
 
+    channel_id = str(message.channel.id)
+    if channel_id not in _onboarded:
+        _onboarded.add(channel_id)
+        try:
+            already_pinned = False
+            async for p in message.channel.pins():
+                if p.author == client.user:
+                    already_pinned = True
+                    break
+            if not already_pinned:
+                await _send_settings_panel(message.channel)
+        except discord.Forbidden:
+            pass  # 이 채널에서 메시지 전송/핀 권한이 없어도 아래 실제 메시지 처리는 계속 진행
+
     intent, detail = classify_message(message.content)
+    print(f"[on_message] '{message.content}' -> intent={intent} detail={detail}", flush=True)
 
     if intent == "help":
         await _send_settings_panel(message.channel)
