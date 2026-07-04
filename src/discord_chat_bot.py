@@ -32,7 +32,9 @@ HELP_TEXT = """🌤️ **출근 비서 봇 사용법**
 - **출근지 설정** — "출근지 강남역에서 서울역으로 설정해줘" 처럼 말하면 저장해두고, 이후 알림 보낼 때마다 날씨+출퇴근 소요시간을 같이 보내드려요.
 - **자전거 통근 설정** — "자전거로 통근한다고 설정해줘" 처럼 말하면 노면 상태·체감온도(윈드칠)까지 챙겨서 브리핑해드리고, 자동 알림에서 자차/대중교통 시간은 생략돼요(자전거엔 무의미해서). "니치 해제해줘"로 끄면 다시 자차/대중교통 시간이 나와요.
 - **채팅 정리** — "메시지 정리해줘" / "최근 100개 지워줘" 처럼 말하면 최근 메시지를 지워드려요(기본 50개). 봇에게 '메시지 관리' 권한이 있어야 해요.
-- **도움말** — "뭐 할 수 있어?", "명령어 알려줘" 라고 물어보면 이 안내를 다시 보여드려요."""
+- **도움말** — "뭐 할 수 있어?", "명령어 알려줘" 라고 물어보면 이 안내를 다시 보여드려요.
+
+👇 아래 버튼으로 니치 설정·채팅 정리를 바로 할 수도 있어요(채팅 안 쳐도 됨)."""
 
 WEEKDAYS_KR = ["월", "화", "수", "목", "금", "토", "일"]
 
@@ -92,6 +94,42 @@ def _save_niche(niche: dict) -> None:
     os.makedirs(os.path.dirname(NICHE_PATH), exist_ok=True)
     with open(NICHE_PATH, "w", encoding="utf-8") as f:
         json.dump(niche, f, ensure_ascii=False, indent=2)
+
+
+class SettingsView(discord.ui.View):
+    """니치 설정·채팅 정리는 선택지가 정해져 있어 채팅 분류(Claude 호출) 대신 버튼으로 딸깍 처리.
+    custom_id 고정 + timeout=None이라 봇 재시작 후에도(on_ready에서 add_view) 버튼이 계속 동작함."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🚲 자전거 통근", style=discord.ButtonStyle.primary, custom_id="niche_bike")
+    async def set_bike(self, interaction: discord.Interaction, button: discord.ui.Button):
+        niche = _load_niche()
+        niche[str(interaction.channel_id)] = "bike"
+        _save_niche(niche)
+        await interaction.response.send_message(
+            "🚲 자전거 통근으로 설정했어요. 노면 상태·체감온도까지 챙겨서 알려드려요.", ephemeral=True
+        )
+
+    @discord.ui.button(label="🚗 자동차·대중교통 (기본)", style=discord.ButtonStyle.secondary, custom_id="niche_default")
+    async def set_default(self, interaction: discord.Interaction, button: discord.ui.Button):
+        niche = _load_niche()
+        channel_id = str(interaction.channel_id)
+        if channel_id in niche:
+            del niche[channel_id]
+            _save_niche(niche)
+        await interaction.response.send_message("🚗 자동차·대중교통 기본 모드로 설정했어요.", ephemeral=True)
+
+    @discord.ui.button(label="🧹 채팅 정리", style=discord.ButtonStyle.danger, custom_id="clear_chat")
+    async def clear_chat(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            deleted = await interaction.channel.purge(limit=DEFAULT_CLEAR_COUNT)
+            await interaction.response.send_message(f"🧹 메시지 {len(deleted)}개 정리했어요.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "메시지를 지울 권한이 없어요. 봇 권한에 '메시지 관리(Manage Messages)'를 추가해주세요.", ephemeral=True
+            )
 
 
 def classify_message(text: str) -> tuple[str, str | None]:
@@ -158,6 +196,7 @@ def classify_message(text: str) -> tuple[str, str | None]:
 @client.event
 async def on_ready():
     print(f"logged in as {client.user}")
+    client.add_view(SettingsView())  # custom_id 고정 버튼이 재시작 후에도 계속 동작하도록 등록
     check_schedule.start()
 
 
@@ -169,7 +208,7 @@ async def on_message(message: discord.Message):
     intent, detail = classify_message(message.content)
 
     if intent == "help":
-        await message.channel.send(HELP_TEXT)
+        await message.channel.send(HELP_TEXT, view=SettingsView())
         return
 
     if intent == "clear":
