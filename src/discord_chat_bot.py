@@ -11,6 +11,7 @@ from discord.ext import tasks
 from dotenv import load_dotenv
 
 from src.briefing import generate_briefing, generate_niche_briefing
+from src.feedback import get_personal_offset, record_feedback, save_last_weather
 from src.llm import chat as llm_chat
 from src.predictor import get_prediction, get_today_observed
 from src.traffic import get_driving_eta, get_transit_eta
@@ -31,6 +32,7 @@ HELP_TEXT = """🌤️ **출근 비서 봇 사용법**
 - **출근지 설정** — "출근지 강남역에서 서울역으로 설정해줘" 처럼 말하면 저장해두고, 이후 알림 보낼 때마다 날씨+출퇴근 소요시간을 같이 보내드려요.
 - **자전거 통근 설정** — "자전거로 통근한다고 설정해줘" 처럼 말하면 노면 상태·체감온도(윈드칠)까지 챙겨서 브리핑해드리고, 자동 알림에서 자차/대중교통 시간은 생략돼요(자전거엔 무의미해서). "니치 해제해줘"로 끄면 다시 자차/대중교통 시간이 나와요.
 - **채팅 정리** — "메시지 정리해줘" / "최근 100개 지워줘" 처럼 말하면 최근 메시지를 지워드려요(기본 50개). 봇에게 '메시지 관리' 권한이 있어야 해요.
+- **체감 피드백** — 매일 알림 메시지에 붙는 🥶/👍/🥵 버튼을 눌러 그날 체감을 알려주시면, 다음 브리핑부터 옷차림 조언에 반영돼요(개인 체감 학습).
 - **도움말** — "뭐 할 수 있어?", "명령어 알려줘" 라고 물어보면 이 안내를 다시 보여드려요.
 
 👇 아래 버튼으로 니치 설정·채팅 정리를 바로 할 수도 있어요(채팅 안 쳐도 됨)."""
@@ -146,6 +148,31 @@ class SettingsView(discord.ui.View):
             )
 
 
+class FeedbackView(discord.ui.View):
+    """개인 체감 피드백 학습(PRD 4순위). 알림 뒤에 붙여서 클릭 한 번으로 그날 체감을 기록.
+    쌓인 피드백은 src.feedback.get_personal_offset()으로 다음 브리핑 생성에 반영됨."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _record(self, interaction: discord.Interaction, label: str):
+        ok = record_feedback(str(interaction.channel_id), label)
+        msg = "피드백 감사해요! 다음 브리핑부터 반영할게요 🙌" if ok else "이 채널엔 아직 발송된 브리핑이 없어서 기록 못 했어요."
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @discord.ui.button(label="🥶 추웠어", style=discord.ButtonStyle.primary, custom_id="feedback_cold")
+    async def cold(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._record(interaction, "cold")
+
+    @discord.ui.button(label="👍 딱 좋았어", style=discord.ButtonStyle.success, custom_id="feedback_good")
+    async def good(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._record(interaction, "good")
+
+    @discord.ui.button(label="🥵 더웠어", style=discord.ButtonStyle.danger, custom_id="feedback_hot")
+    async def hot(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._record(interaction, "hot")
+
+
 async def _send_settings_panel(channel: discord.abc.Messageable) -> None:
     """도움말+설정 버튼 패널 전송. 채널에 이미 봇이 고정해둔 패널이 없으면 새로 핀 고정(채팅 정리해도 안 지워짐)."""
     sent = await channel.send(HELP_TEXT, view=SettingsView())
@@ -224,6 +251,7 @@ def classify_message(text: str) -> tuple[str, str | None]:
 async def on_ready():
     print(f"logged in as {client.user}")
     client.add_view(SettingsView())  # custom_id 고정 버튼이 재시작 후에도 계속 동작하도록 등록
+    client.add_view(FeedbackView())
     check_schedule.start()
 
 
@@ -258,7 +286,7 @@ async def on_message(message: discord.Message):
             now = dt.datetime.now()
             if now.strftime("%H:%M") >= detail:
                 # ponytail: 등록 처리(Claude 분류 등)에 걸리는 시간 동안 목표 시각이 이미 지나가버리는 레이스 대응 -> 오늘자는 바로 발송
-                await message.channel.send(f"<@{message.author.id}>\n{_build_daily_message(channel_id)}")
+                await message.channel.send(f"<@{message.author.id}>\n{_build_daily_message(channel_id)}", view=FeedbackView())
                 _sent_today[(channel_id, detail)] = now.strftime("%Y-%m-%d")
         else:
             await message.channel.send("몇 시에 보내드릴까요? 예: '아침 8시에 알려줘'")
@@ -350,8 +378,10 @@ def _build_daily_message(channel_id: str) -> str:
     """날씨 브리핑 + (출근지 설정돼 있으면) 출퇴근 소요시간을 혼동 없이 구분된 섹션으로 합쳐서 반환.
     자전거 니치는 자차/대중교통 시간이 무의미해서 그 섹션은 생략(니치 해제 시 다시 표시)."""
     pred = get_prediction()
+    save_last_weather(channel_id, pred)  # 피드백 버튼이 "그날 날씨"를 알 수 있도록 기록
     niche = _load_niche().get(channel_id)
-    parts = [format_header(pred), f"🌤️ **날씨**\n{generate_briefing(pred)}"]
+    personal_offset = get_personal_offset(channel_id)
+    parts = [format_header(pred), f"🌤️ **날씨**\n{generate_briefing(pred, personal_offset)}"]
     if niche:
         parts.append(f"🚲 **자전거 통근 체크**\n{generate_niche_briefing(pred, niche)}")
 
@@ -403,7 +433,7 @@ async def check_schedule():
             else:
                 text = _build_daily_message(channel_id)
             mention = f"<@{user_id}>\n" if user_id else ""
-            await channel.send(mention + text)
+            await channel.send(mention + text, view=FeedbackView())
             _sent_today[key] = today
             print(f"[check_schedule] sent to {key}", flush=True)
 
