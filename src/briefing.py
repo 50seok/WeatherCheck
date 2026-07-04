@@ -25,17 +25,21 @@ def _ask(prompt: str) -> str:
     return llm_chat(prompt)
 
 
-def generate_briefing(prediction: dict) -> str:
+def generate_briefing(prediction: dict, personal_offset: float | None = None) -> str:
     hits = search(_build_query(prediction))
     context = "\n\n".join(f"[{doc_id}]\n{text}" for doc_id, text in hits)
 
     when = "오늘 서울 실측 날씨" if prediction.get("source") == "observed" else f"내일({prediction['date']}) 서울 날씨 예측"
+    offset_note = ""
+    if personal_offset:
+        direction = "춥게" if personal_offset > 0 else "덥게"
+        offset_note = f"\n참고: 이 사용자는 과거 피드백 기준 실제 기온보다 체감상 약 {abs(personal_offset)}°C 더 {direction} 느끼는 경향이 있어. 옷차림 조언을 이 경향에 맞게 조정해줘."
     prompt = f"""{when}: 최고 {prediction['temp_max']}°C, 최저 {prediction['temp_min']}°C, 강수확률 {prediction['rain_prob'] * 100:.0f}%
 
 참고 문서:
 {context}
 
-위 참고 문서 내용을 근거로 삼아 출근 전 챙길 것을 2~3문장의 자연스러운 한국어로 안내해줘. 이모지를 섞고, 근거로 삼은 문서는 대괄호로 표시해줘(예: [문서명])."""
+위 참고 문서 내용을 근거로 삼아 출근 전 챙길 것을 2~3문장의 자연스러운 한국어로 안내해줘. 이모지를 섞고, 근거로 삼은 문서는 대괄호로 표시해줘(예: [문서명]).{offset_note}"""
     return _ask(prompt)
 
 
