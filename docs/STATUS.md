@@ -1,6 +1,6 @@
 # STATUS — WeatherCheck
 
-> 갱신: 2026-07-04(오후) · **마감: 2026-07-07(월) 09:00 제출(프로젝트+보고서)**
+> 갱신: 2026-07-04(저녁) · **마감: 2026-07-07(월) 09:00 제출(프로젝트+보고서)**
 > GitHub: https://github.com/50seok/WeatherCheck (private)
 
 ## 진행 체크리스트
@@ -15,7 +15,7 @@
   1. Cloud 기본 Python 3.14에 tensorflow wheel 없어 설치 실패 → `.python-version`으로 3.13 고정 (7/4)
   2. 모델·데이터 파일 gitignore돼서 배포 때마다 LSTM 재학습 발생 → 로딩 지연 원인. 용량이 450KB 미만이라 그냥 git에 커밋(`data/raw/seoul_weather.csv`, `src/dl/models/lstm_model.keras`, `notebooks/figures/*.png`)해서 재학습 자체를 없앰 (7/4)
 - 데모 영상: 생략 결정 (7/3)
-- **PRD 차별화 우선순위 진행** (7/4): 1순위 교통 결합 → 2순위 출근지 설정 → 3순위 니치 타겟(자전거 통근) 순으로 구현 완료. 4순위(개인 체감 피드백)는 미시작.
+- **PRD 차별화 우선순위 진행** (7/4): 1순위 교통 결합 → 2순위 출근지 설정 → 3순위 니치 타겟(자전거 통근) → 4순위 개인 체감 피드백까지 **전부 구현 완료**.
   1. 교통 결합: TMAP(자차 경로)·ODsay(대중교통 경로) API 연동, 디스코드 채팅으로 출발지/도착지 매번 입력받는 방식(`src/traffic.py`)
   2. 출근지 설정: 출발지/도착지를 한 번 등록해두면 이후 알림에 날씨+출퇴근 소요시간을 같이 보내줌(`data/commute.json`, gitignore)
   3. 니치 타겟: PRD가 예시로 든 자전거 통근족 하나만 우선 구현(1인 비서 취지상 다중 니치 불필요 판단) — 니치 전용 지식 문서(`data/knowledge/niche/자전거통근_노면가이드.md`) 추가, 디스코드 채팅 또는 버튼으로 "자전거"/"자동차·대중교통(기본)" 토글(`data/niche.json`, gitignore)
@@ -37,6 +37,12 @@
   - `src/briefing.py`, `src/discord_chat_bot.py`에서 `anthropic` import 전부 제거하고 `src.llm.chat`으로 교체. `requirements.txt`에서 `anthropic` 제거, `.env.example`에서 `ANTHROPIC_API_KEY` 제거
   - 프롬프트 보강 필요했던 부분: HELP 인식이 "도움말" 같은 직접적 표현엔 반응하지만 "뭐 할 수 있어?" 같은 간접 표현을 놓침 → 예시 추가로 해결. 장소명 추출 시 "강남역"을 "강남"으로 줄여 쓰는 오류 → "원문 글자 그대로 옮겨 적어" 지시 추가로 해결
   - **실행 전제조건 추가**: Ollama가 로컬에서 실행 중이어야 함(`ollama serve`, 보통 설치 시 자동 상시 실행) + `ollama pull exaone3.5:7.8b` 필요. Streamlit 배포(`app.py`, Track A 전용)는 이 봇과 무관해서 영향 없음
+  - 전환 직후 회귀 2건 추가 발견·수정: (a) "기능"/"명령어"처럼 완전한 문장이 아닌 단어 하나만 쳤을 때 HELP를 못 알아채 봇이 무응답이던 문제 → 단어 하나여도 HELP로 처리하라는 규칙 추가 (b) "매일"이란 단어가 없으면 "15시18분에 알려줘"류 요청을 SCHEDULE로 인식 못 하던 문제(Claude는 됐었음) → "매일 없어도 시각+알림 요청이면 SCHEDULE" 규칙 추가. 기존 15개 인텐트 케이스 전부 재검증 통과
+- **개인 체감 피드백 학습 완료** (7/4 저녁, PRD 4순위·"프로젝트 시그니처"):
+  - 매일 알림 메시지에 🥶 추웠어 / 👍 딱 좋았어 / 🥵 더웠어 버튼(`FeedbackView`) 부착 → 클릭 시 `data/feedback.json`(gitignore)에 그날 기온과 함께 기록
+  - `src/feedback.py`: `get_personal_offset(channel_id)` — 누적 피드백의 라벨별 평균으로 개인 체감온도 보정치(°C) 계산. 표본 3개 미만이면 중립(보정 없음). ponytail 판단: 며칠짜리 데이터로 회귀모델 학습하면 과적합이라 오히려 신뢰성 저하 — 평균 보정치가 이 규모엔 더 정직한 방법
+  - `generate_briefing(prediction, personal_offset)`에 보정치를 프롬프트로 주입해 옷차림 조언에 자연스럽게 반영(니치 조언과 같은 패턴)
+  - `src/seed_feedback.py` 신규: 시연용 더미 피드백 10건 생성 스크립트(`python -m src.seed_feedback <channel_id>`) — 실사용 며칠로는 학습 효과를 보여주기 어려워서, "실제보다 추위를 잘 타는 사용자" 시나리오로 미리 채워둠(평균 보정치 +2.0°C로 검증 완료)
 
 ## Streamlit Cloud 배포 절차
 1. https://share.streamlit.io 접속 → GitHub 계정으로 로그인
@@ -67,6 +73,9 @@
   - 출퇴근 소요시간("강남역에서 서울역까지 얼마나 걸려?") → `src/traffic.py`가 TMAP(자차)·ODsay(대중교통) 조회, 매번 채팅으로 출발지/도착지 입력
   - 출근지 설정("출근지 강남역에서 서울역으로 설정해줘") / 해제("출근지 해제해줘" → `UNCOMMUTE` 인텐트) → `data/commute.json`(gitignore)에 저장, 이후 알림 보낼 때마다 날씨+출퇴근 소요시간을 구분된 섹션으로 같이 발송(`_build_daily_message`). 자전거 니치일 땐 이 섹션 생략(데이터는 유지, 니치 해제하면 복원)
   - 니치 타겟(자전거 통근) — 채팅("자전거로 통근한다고 설정해줘"/"니치 해제해줘") 또는 버튼(🚲/🚗)으로 토글, `data/niche.json`(gitignore)에 저장. `generate_niche_briefing()`이 `data/knowledge/niche/자전거통근_노면가이드.md`를 검색 없이 직접 읽어 날씨 섹션과 분리된 별도 섹션(🚲)으로 생성
+  - 개인 체감 피드백 — 매일 알림에 붙는 🥶/👍/🥵 버튼(`FeedbackView`) 클릭 시 `src/feedback.py`가 `data/feedback.json`(gitignore)에 기록, 누적되면 `get_personal_offset()`이 브리핑에 자동 반영
+- `src/feedback.py` (7/4 추가): 개인 체감온도 보정치 계산(`get_personal_offset`), 발송 날씨 기록(`save_last_weather`), 피드백 기록(`record_feedback`)
+- `src/seed_feedback.py` (7/4 추가): 시연용 더미 피드백 10건 생성 스크립트
 - `.env.example` — `DISCORD_WEBHOOK_URL`, `DISCORD_BOT_TOKEN`, `TMAP_APP_KEY`, `ODSAY_API_KEY` (`ANTHROPIC_API_KEY`는 Ollama 전환으로 7/4 오후 제거)
 - 검증: `python -m src.predictor`, `python -m src.rag`, `python -m src.briefing`, `python -m src.discord_bot` 전부 실행 확인·통과(7/3, 7/4 Ollama 전환 후 재검증 완료)
 
