@@ -34,7 +34,8 @@
 | B | RAG·브리핑·봇 | Track A(LSTM) 통합 완료, end-to-end 검증 완료 | `C:\Mark42\WeatherCheck-rag` | feature/rag-briefing |
 
 ## Track B 구현 메모
-- `data/knowledge/*.md` (7개): 우산·일교차 옷차림·폭염·한파·미세먼지·자외선 가이드(기상청 생활기상지수 공개자료 요약) + 자전거통근 노면가이드(니치 타겟용, 7/4 추가)
+- `data/knowledge/*.md` (6개): 우산·일교차 옷차림·폭염·한파·미세먼지·자외선 가이드 — 기상청 생활기상지수 공개자료 요약
+- `data/knowledge/niche/*.md` (니치 타겟 전용, 7/4 추가): 자전거통근 노면가이드. 일반 지식 풀과 섞이면 니치 미설정 사용자에게도 자전거 조언이 오염돼 섞여 나오는 버그가 있어(TF-IDF top-3 검색이 문서 수가 적어 오검색) 별도 하위 폴더로 분리, `generate_niche_briefing()`이 검색 없이 니치→문서 1:1로 직접 읽어 별도 섹션(🚲)으로 생성
 - `src/predictor.py`: `get_prediction()` — `src.dl.predict`(LSTM, MAE 2.41°C로 ML 대비 최고 성능) 호출, contract.md 스키마 그대로 반환(`source: "lstm"`). mock(`get_mock_prediction`)은 Track A 통합 완료로 제거.
 - `data/raw/seoul_weather.csv`, `src/dl/models/lstm_model.keras`, `notebooks/figures/*.png`: 원래 gitignore 대상이었으나 배포 시 매번 재학습돼 로딩이 느려지는 문제 발견(7/4) → 용량이 450KB 미만이라 `.gitignore`에 예외 추가 후 git에 커밋. `src/dl/predict.py`의 "파일 없으면 재학습" 폴백은 유지(로컬에서 파일 지우고 실험할 때나 향후 재학습 시 대비용).
 - `src/rag.py`: Chroma(`chroma_db/`, gitignore됨)로 인덱싱. 임베딩은 Chroma 기본 ONNX 모델(79MB 다운로드) 대신 **TF-IDF(sklearn)** 사용 — 이 네트워크에서 ONNX 모델 다운로드가 반복적으로 timeout돼서 판단 후 교체. 문서 6~10개 규모라 매 검색마다 컬렉션 재구축해도 즉시 처리됨

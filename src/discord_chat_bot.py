@@ -11,7 +11,7 @@ from anthropic import Anthropic
 from discord.ext import tasks
 from dotenv import load_dotenv
 
-from src.briefing import generate_briefing
+from src.briefing import generate_briefing, generate_niche_briefing
 from src.predictor import get_prediction, get_today_observed
 from src.traffic import get_driving_eta, get_transit_eta
 
@@ -274,8 +274,10 @@ async def on_message(message: discord.Message):
         async with message.channel.typing():
             pred = get_today_observed() if intent == "weather_today" else get_prediction()
             niche = _load_niche().get(str(message.channel.id))
-            text = generate_briefing(pred, niche)
-        await message.channel.send(f"{format_header(pred)}\n{text}")
+            parts = [format_header(pred), f"🌤️ **날씨**\n{generate_briefing(pred)}"]
+            if niche:
+                parts.append(f"🚲 **자전거 통근 체크**\n{generate_niche_briefing(pred, niche)}")
+        await message.channel.send("\n\n".join(parts))
 
 
 def _build_daily_message(channel_id: str) -> str:
@@ -283,7 +285,9 @@ def _build_daily_message(channel_id: str) -> str:
     자전거 니치는 자차/대중교통 시간이 무의미해서 그 섹션은 생략(니치 해제 시 다시 표시)."""
     pred = get_prediction()
     niche = _load_niche().get(channel_id)
-    parts = [format_header(pred), f"🌤️ **날씨**\n{generate_briefing(pred, niche)}"]
+    parts = [format_header(pred), f"🌤️ **날씨**\n{generate_briefing(pred)}"]
+    if niche:
+        parts.append(f"🚲 **자전거 통근 체크**\n{generate_niche_briefing(pred, niche)}")
 
     commute = _load_commute().get(channel_id)
     if commute and niche != "bike":
