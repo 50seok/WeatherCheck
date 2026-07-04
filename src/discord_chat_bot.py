@@ -124,12 +124,23 @@ class SettingsView(discord.ui.View):
     @discord.ui.button(label="🧹 채팅 정리", style=discord.ButtonStyle.danger, custom_id="clear_chat")
     async def clear_chat(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            deleted = await interaction.channel.purge(limit=DEFAULT_CLEAR_COUNT)
+            deleted = await interaction.channel.purge(limit=DEFAULT_CLEAR_COUNT, check=lambda m: not m.pinned)
             await interaction.response.send_message(f"🧹 메시지 {len(deleted)}개 정리했어요.", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message(
                 "메시지를 지울 권한이 없어요. 봇 권한에 '메시지 관리(Manage Messages)'를 추가해주세요.", ephemeral=True
             )
+
+
+async def _send_settings_panel(channel: discord.abc.Messageable) -> None:
+    """도움말+설정 버튼 패널 전송. 채널에 이미 봇이 고정해둔 패널이 없으면 새로 핀 고정(채팅 정리해도 안 지워짐)."""
+    sent = await channel.send(HELP_TEXT, view=SettingsView())
+    try:
+        pins = await channel.pins()
+        if not any(p.author == client.user for p in pins):
+            await sent.pin()
+    except discord.Forbidden:
+        pass  # 핀 권한 없으면 그냥 일반 메시지로만 남음
 
 
 def classify_message(text: str) -> tuple[str, str | None]:
@@ -208,13 +219,13 @@ async def on_message(message: discord.Message):
     intent, detail = classify_message(message.content)
 
     if intent == "help":
-        await message.channel.send(HELP_TEXT, view=SettingsView())
+        await _send_settings_panel(message.channel)
         return
 
     if intent == "clear":
         count = int(detail) if detail else DEFAULT_CLEAR_COUNT
         try:
-            deleted = await message.channel.purge(limit=count + 1)  # +1: 요청 메시지 자신 포함
+            deleted = await message.channel.purge(limit=count + 1, check=lambda m: not m.pinned)  # +1: 요청 메시지 자신 포함, 핀 고정된 설정 패널은 보존
             notice = await message.channel.send(f"🧹 메시지 {len(deleted) - 1}개 정리했어요.")
             await notice.delete(delay=3)
         except discord.Forbidden:
