@@ -1,13 +1,7 @@
 from pathlib import Path
 
-from anthropic import Anthropic
-from dotenv import load_dotenv
-
+from src.llm import chat as llm_chat
 from src.rag import search
-
-load_dotenv()
-
-MODEL = "claude-haiku-4-5-20251001"
 
 NICHE_DIR = Path(__file__).resolve().parent.parent / "data" / "knowledge" / "niche"
 NICHE_LABELS = {"bike": "자전거 통근"}
@@ -28,13 +22,7 @@ def _build_query(prediction: dict) -> str:
 
 
 def _ask(prompt: str) -> str:
-    client = Anthropic()
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=300,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text
+    return llm_chat(prompt)
 
 
 def generate_briefing(prediction: dict) -> str:

@@ -7,11 +7,11 @@ import json
 import os
 
 import discord
-from anthropic import Anthropic
 from discord.ext import tasks
 from dotenv import load_dotenv
 
 from src.briefing import generate_briefing, generate_niche_briefing
+from src.llm import chat as llm_chat
 from src.predictor import get_prediction, get_today_observed
 from src.traffic import get_driving_eta, get_transit_eta
 
@@ -20,7 +20,6 @@ load_dotenv()
 SCHEDULE_PATH = "data/schedule.json"
 COMMUTE_PATH = "data/commute.json"
 NICHE_PATH = "data/niche.json"
-TIME_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_CLEAR_COUNT = 50
 PREP_MINUTES = 3  # 정각에 지연 없이 보내려고 이만큼 미리 브리핑을 만들어둠
 
@@ -163,43 +162,36 @@ async def _send_settings_panel(channel: discord.abc.Messageable) -> None:
 
 
 def classify_message(text: str) -> tuple[str, str | None]:
-    """메시지 의도를 분류. 키워드 매칭 대신 자연스러운 표현도 인식하도록 Claude에게 위임.
+    """메시지 의도를 분류. 키워드 매칭 대신 자연스러운 표현도 인식하도록 로컬 sLLM(EXAONE)에게 위임.
 
     반환: (intent, detail)
     intent: "weather_today" | "weather_tomorrow" | "weather_other" | "schedule" | "unschedule" | "traffic" | "commute" | "uncommute" | "niche" | "clear" | "help" | "none"
     detail: schedule일 땐 HH:MM(또는 None), clear일 땐 지울 개수(문자열 숫자, 없으면 None), niche일 땐 "BIKE"/"OFF", 그 외엔 None.
     """
-    resp = Anthropic().messages.create(
-        model=TIME_MODEL,
-        max_tokens=20,
-        messages=[{
-            "role": "user",
-            "content": (
-                "디스코드 채널의 메시지 하나를 아래 중 정확히 하나로 분류해서, "
-                "반드시 지정된 라벨로만 답해(다른 말 절대 하지 마):\n"
-                "- 오늘 날씨/우산/옷차림을 묻거나, 날짜 언급 없이 그냥 날씨를 물으면 -> WEATHER_TODAY\n"
-                "- 내일 날씨를 물으면 -> WEATHER_TOMORROW\n"
-                "- 오늘·내일이 아닌 다른 날(특정 요일, 모레, 며칠 뒤 등)의 날씨를 물으면 -> WEATHER_OTHER\n"
-                "- 매일 정해진 시각에 브리핑을 자동으로 받고 싶다는 요청 -> SCHEDULE HH:MM"
-                "(24시간제. \"1324\"처럼 콜론 없는 4자리 숫자로만 시각을 말해도 시각으로 인식해서 HH:MM으로 변환. "
-                "시각이 명시 안 됐으면 HH:MM 자리에 NONE)\n"
-                "- 매일 오던 알림을 그만 받고 싶다는 요청(취소/해지 등) -> UNSCHEDULE\n"
-                "- 채팅/메시지를 정리·삭제해달라는 요청 -> CLEAR N"
-                "(N은 지울 개수 숫자. 명시 안 됐으면 N 자리에 NONE)\n"
-                "- 출발지에서 도착지까지 얼마나 걸리는지(자차/대중교통) 묻는 요청 -> TRAFFIC 출발지|도착지"
-                "(장소명 두 개를 파이프(|)로 구분. 둘 다 명시 안 됐으면 TRAFFIC NONE)\n"
-                "- 본인 출근지(출발지-도착지)를 등록/설정해달라는 요청 -> COMMUTE 출발지|도착지"
-                "(장소명 두 개를 파이프(|)로 구분. 둘 다 명시 안 됐으면 COMMUTE NONE)\n"
-                "- 등록해둔 출근지(출발지-도착지) 설정을 해제/취소하는 요청(\"출근지 해제\", \"출근지 설정 취소\" 등) -> UNCOMMUTE\n"
-                "- 본인이 자전거로 통근한다고 설정/등록하는 요청 -> NICHE BIKE\n"
-                "- (출근지가 아니라) 자전거 통근 니치 설정 자체를 해제/취소하는 요청(\"니치 해제\", \"자전거 통근 그만\" 등) -> NICHE OFF\n"
-                "- 봇 사용법·도움말·명령어를 묻는 요청 -> HELP\n"
-                "- 그 외 무관한 잡담 -> NONE\n\n"
-                f"메시지: {text}"
-            ),
-        }],
+    prompt = (
+        "디스코드 채널의 메시지 하나를 아래 중 정확히 하나로 분류해서, "
+        "반드시 지정된 라벨로만 답해(다른 말 절대 하지 마):\n"
+        "- 오늘 날씨/우산/옷차림을 묻거나, 날짜 언급 없이 그냥 날씨를 물으면 -> WEATHER_TODAY\n"
+        "- 내일 날씨를 물으면 -> WEATHER_TOMORROW\n"
+        "- 오늘·내일이 아닌 다른 날(특정 요일, 모레, 며칠 뒤 등)의 날씨를 물으면 -> WEATHER_OTHER\n"
+        "- 매일 정해진 시각에 브리핑을 자동으로 받고 싶다는 요청 -> SCHEDULE HH:MM"
+        "(24시간제. \"1324\"처럼 콜론 없는 4자리 숫자로만 시각을 말해도 시각으로 인식해서 HH:MM으로 변환. "
+        "시각이 명시 안 됐으면 HH:MM 자리에 NONE)\n"
+        "- 매일 오던 알림을 그만 받고 싶다는 요청(취소/해지 등) -> UNSCHEDULE\n"
+        "- 채팅/메시지를 정리·삭제해달라는 요청 -> CLEAR N"
+        "(N은 지울 개수 숫자. 명시 안 됐으면 N 자리에 NONE)\n"
+        "- 출발지에서 도착지까지 얼마나 걸리는지(자차/대중교통) 묻는 요청 -> TRAFFIC 출발지|도착지"
+        "(장소명 두 개를 파이프(|)로 구분. 원문에 있는 글자를 하나도 빼거나 줄이지 말고 그대로 옮겨 적어(예: \"강남역\"이면 \"강남\"이 아니라 \"강남역\"). 둘 다 명시 안 됐으면 TRAFFIC NONE)\n"
+        "- 본인 출근지(출발지-도착지)를 등록/설정해달라는 요청 -> COMMUTE 출발지|도착지"
+        "(장소명 두 개를 파이프(|)로 구분. 원문에 있는 글자를 하나도 빼거나 줄이지 말고 그대로 옮겨 적어(예: \"강남역\"이면 \"강남\"이 아니라 \"강남역\"). 둘 다 명시 안 됐으면 COMMUTE NONE)\n"
+        "- 등록해둔 출근지(출발지-도착지) 설정을 해제/취소하는 요청(\"출근지 해제\", \"출근지 설정 취소\" 등) -> UNCOMMUTE\n"
+        "- 본인이 자전거로 통근한다고 설정/등록하는 요청 -> NICHE BIKE\n"
+        "- (출근지가 아니라) 자전거 통근 니치 설정 자체를 해제/취소하는 요청(\"니치 해제\", \"자전거 통근 그만\" 등) -> NICHE OFF\n"
+        "- 봇 사용법·도움말·명령어를 묻는 요청, 또는 봇이 뭘 할 수 있는지·무슨 기능이 있는지 묻는 요청(\"뭐 할 수 있어?\", \"기능 뭐 있어?\", \"명령어 알려줘\" 등) -> HELP\n"
+        "- 그 외 무관한 잡담 -> NONE\n\n"
+        f"메시지: {text}"
     )
-    result = resp.content[0].text.strip()
+    result = llm_chat(prompt, temperature=0).strip()
     if result.startswith("SCHEDULE"):
         parts = result.split()
         hhmm = parts[1] if len(parts) > 1 else "NONE"

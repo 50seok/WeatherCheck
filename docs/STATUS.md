@@ -27,6 +27,16 @@
   4. 알림 시각을 "1324"처럼 콜론 없는 24시간제 4자리 숫자로도 설정 가능하게 파싱 보강
   5. 니치 설정(자전거/기본)·채팅 정리를 자연어 대신 버튼(discord.ui.View)으로도 가능하게 추가 — Claude 분류 호출 없이 즉시 처리. 도움말 요청 시 버튼 패널을 채널에 자동 핀 고정(채팅 정리해도 안 지워짐)
   - 초대 링크: `https://discord.com/oauth2/authorize?client_id=1522624990674026656&permissions=75776&scope=bot` (Send Messages+Manage Messages+Read Message History, 토큰과 client_id 일치 확인 완료)
+  6. 정각 3분 전 미리 만든(prep-cache) 브리핑이 그 사이 니치/출근지 설정 변경을 못 반영하던 버그 수정 — 준비 시점 설정을 스냅샷으로 저장해두고 발송 시점에 바뀌었으면 캐시 버리고 재생성
+  7. 알림 발송 시 사용자를 `@멘션`으로 태그 — 일반 메시지는 디스코드 알림 설정(멘션만 등)에 따라 푸시알림이 안 올 수 있어서. `schedule.json`에 `user_id` 같이 저장(예전 문자열 포맷도 호환)
+  8. 채팅 정리 버튼이 `purge()` 3초 넘게 걸리면 인터랙션 토큰 만료로 조용히 실패(`Unknown interaction` 404)하던 버그 수정 — `defer()` 먼저 하고 `followup.send()`로 응답
+- **LLM 백엔드를 Claude API → 로컬 Ollama sLLM(EXAONE 3.5 7.8B)로 완전 교체** (7/4 오후, 선생님 과제 취지가 외부 API보다 sLLM 직접 운용 학습이라 결정):
+  - 사전 검증: `gemma4:e2b`는 한국어 입력 자체를 이해 못 함(탈락) → LG `exaone3.5:7.8b`(4.8GB, 한국어 특화)로 교체 후 RAG 근거 인용 브리핑 품질 확인, GPU(RTX 4060 8GB)에서 8~12초 응답
+  - 발견한 문제: 의도 분류 프롬프트가 기본 temperature에서 같은 입력에도 답이 오락가락함(비결정적) → `temperature=0`으로 고정하니 완전히 일치 → 분류(`classify_message`)는 항상 temperature=0, 생성(브리핑)은 기본값 사용
+  - `src/llm.py` 신규: Ollama `/api/chat` 호출 공용 헬퍼(`chat(prompt, temperature)`), `keep_alive: "30m"`으로 모델을 계속 로드 상태 유지(재로딩 시 수십 초 지연 방지)
+  - `src/briefing.py`, `src/discord_chat_bot.py`에서 `anthropic` import 전부 제거하고 `src.llm.chat`으로 교체. `requirements.txt`에서 `anthropic` 제거, `.env.example`에서 `ANTHROPIC_API_KEY` 제거
+  - 프롬프트 보강 필요했던 부분: HELP 인식이 "도움말" 같은 직접적 표현엔 반응하지만 "뭐 할 수 있어?" 같은 간접 표현을 놓침 → 예시 추가로 해결. 장소명 추출 시 "강남역"을 "강남"으로 줄여 쓰는 오류 → "원문 글자 그대로 옮겨 적어" 지시 추가로 해결
+  - **실행 전제조건 추가**: Ollama가 로컬에서 실행 중이어야 함(`ollama serve`, 보통 설치 시 자동 상시 실행) + `ollama pull exaone3.5:7.8b` 필요. Streamlit 배포(`app.py`, Track A 전용)는 이 봇과 무관해서 영향 없음
 
 ## Streamlit Cloud 배포 절차
 1. https://share.streamlit.io 접속 → GitHub 계정으로 로그인
@@ -46,9 +56,10 @@
 - `src/predictor.py`: `get_prediction()` — `src.dl.predict`(LSTM, MAE 2.41°C로 ML 대비 최고 성능) 호출, contract.md 스키마 그대로 반환(`source: "lstm"`). mock(`get_mock_prediction`)은 Track A 통합 완료로 제거.
 - `data/raw/seoul_weather.csv`, `src/dl/models/lstm_model.keras`, `notebooks/figures/*.png`: 원래 gitignore 대상이었으나 배포 시 매번 재학습돼 로딩이 느려지는 문제 발견(7/4) → 용량이 450KB 미만이라 `.gitignore`에 예외 추가 후 git에 커밋. `src/dl/predict.py`의 "파일 없으면 재학습" 폴백은 유지(로컬에서 파일 지우고 실험할 때나 향후 재학습 시 대비용).
 - `src/rag.py`: Chroma(`chroma_db/`, gitignore됨)로 인덱싱. 임베딩은 Chroma 기본 ONNX 모델(79MB 다운로드) 대신 **TF-IDF(sklearn)** 사용 — 이 네트워크에서 ONNX 모델 다운로드가 반복적으로 timeout돼서 판단 후 교체. 문서 6~10개 규모라 매 검색마다 컬렉션 재구축해도 즉시 처리됨
-- `src/briefing.py`: `generate_briefing(prediction)` — RAG 검색 결과를 근거로 Claude API(`claude-haiku-4-5-20251001`)가 한국어 브리핑 생성. 단순 요약·생성 작업이라 sonnet 5는 과함 판단 후 haiku로 교체. `ANTHROPIC_API_KEY` 필요(.env)
+- `src/llm.py` (7/4 추가): 로컬 Ollama(`exaone3.5:7.8b`) 호출 공용 헬퍼. `chat(prompt, temperature)` — 분류는 temperature=0(결정적), 생성은 기본값
+- `src/briefing.py`: `generate_briefing(prediction)` — RAG 검색 결과를 근거로 `src.llm.chat`(로컬 EXAONE)이 한국어 브리핑 생성. API 키 불필요, Ollama가 로컬에서 실행 중이어야 함
 - `src/discord_bot.py`: `send_briefing(text)` — 디스코드 웹훅으로 텍스트 전송(stdlib urllib만 사용, 최소 기능). `DISCORD_WEBHOOK_URL` 필요(.env)
-- `src/discord_chat_bot.py` (7/4 추가): 대화형 봇. 키워드 매칭 대신 Claude(haiku)가 매 메시지 의도를 분류. `DISCORD_BOT_TOKEN` 필요(.env), Developer Portal에서 "Message Content Intent" 켜야 함. 계속 실행 상태 유지 필요(`python -m src.discord_chat_bot`).
+- `src/discord_chat_bot.py` (7/4 추가): 대화형 봇. 키워드 매칭 대신 로컬 EXAONE이 매 메시지 의도를 분류(temperature=0). `DISCORD_BOT_TOKEN` 필요(.env), Developer Portal에서 "Message Content Intent" 켜야 함. Ollama도 같이 실행 중이어야 함. 계속 실행 상태 유지 필요(`python -m src.discord_chat_bot`).
   - 오늘/내일 날씨 질문 → RAG 브리핑 답장(오늘=실측값, 내일=LSTM 예측, 그 이상은 "미지원" 안내)
   - 자연어로 알림 시각 설정("매일 아침 8시에 알려줘") → `data/schedule.json`(gitignore)에 저장, 매분 체크해서 자동 발송
   - 채팅 정리("메시지 정리해줘", 기본 50개, 또는 버튼) → `channel.purge(check=lambda m: not m.pinned)`, 봇에 "메시지 관리" 권한 필요. 핀 고정된 설정 패널은 보존
@@ -56,8 +67,8 @@
   - 출퇴근 소요시간("강남역에서 서울역까지 얼마나 걸려?") → `src/traffic.py`가 TMAP(자차)·ODsay(대중교통) 조회, 매번 채팅으로 출발지/도착지 입력
   - 출근지 설정("출근지 강남역에서 서울역으로 설정해줘") / 해제("출근지 해제해줘" → `UNCOMMUTE` 인텐트) → `data/commute.json`(gitignore)에 저장, 이후 알림 보낼 때마다 날씨+출퇴근 소요시간을 구분된 섹션으로 같이 발송(`_build_daily_message`). 자전거 니치일 땐 이 섹션 생략(데이터는 유지, 니치 해제하면 복원)
   - 니치 타겟(자전거 통근) — 채팅("자전거로 통근한다고 설정해줘"/"니치 해제해줘") 또는 버튼(🚲/🚗)으로 토글, `data/niche.json`(gitignore)에 저장. `generate_niche_briefing()`이 `data/knowledge/niche/자전거통근_노면가이드.md`를 검색 없이 직접 읽어 날씨 섹션과 분리된 별도 섹션(🚲)으로 생성
-- `.env.example` 추가 — `ANTHROPIC_API_KEY`, `DISCORD_WEBHOOK_URL`, `DISCORD_BOT_TOKEN`, `TMAP_APP_KEY`, `ODSAY_API_KEY`
-- 검증: `python -m src.predictor`, `python -m src.rag`, `python -m src.briefing`, `python -m src.discord_bot` 전부 실행 확인·통과(7/3). Claude API 브리핑 생성 + 디스코드 웹훅 전송 실동작 확인 완료
+- `.env.example` — `DISCORD_WEBHOOK_URL`, `DISCORD_BOT_TOKEN`, `TMAP_APP_KEY`, `ODSAY_API_KEY` (`ANTHROPIC_API_KEY`는 Ollama 전환으로 7/4 오후 제거)
+- 검증: `python -m src.predictor`, `python -m src.rag`, `python -m src.briefing`, `python -m src.discord_bot` 전부 실행 확인·통과(7/3, 7/4 Ollama 전환 후 재검증 완료)
 
 ## 알려진 이슈
 - ~~디스코드 웹훅 POST가 403 Forbidden~~ (해결, 7/3): Discord(Cloudflare)가 `urllib` 기본 User-Agent(`Python-urllib/x.x`)를 차단. `src/discord_bot.py` 요청 헤더에 `User-Agent: Mozilla/5.0` 추가로 해결

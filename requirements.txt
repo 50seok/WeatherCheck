@@ -6,7 +6,6 @@ matplotlib
 seaborn
 tensorflow
 streamlit
-anthropic
 chromadb
 discord.py
 python-dotenv
