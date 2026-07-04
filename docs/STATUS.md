@@ -1,6 +1,6 @@
 # STATUS — WeatherCheck
 
-> 갱신: 2026-07-04 · **마감: 2026-07-07(월) 09:00 제출(프로젝트+보고서)**
+> 갱신: 2026-07-04(오후) · **마감: 2026-07-07(월) 09:00 제출(프로젝트+보고서)**
 > GitHub: https://github.com/50seok/WeatherCheck (private)
 
 ## 진행 체크리스트
@@ -18,8 +18,15 @@
 - **PRD 차별화 우선순위 진행** (7/4): 1순위 교통 결합 → 2순위 출근지 설정 → 3순위 니치 타겟(자전거 통근) 순으로 구현 완료. 4순위(개인 체감 피드백)는 미시작.
   1. 교통 결합: TMAP(자차 경로)·ODsay(대중교통 경로) API 연동, 디스코드 채팅으로 출발지/도착지 매번 입력받는 방식(`src/traffic.py`)
   2. 출근지 설정: 출발지/도착지를 한 번 등록해두면 이후 알림에 날씨+출퇴근 소요시간을 같이 보내줌(`data/commute.json`, gitignore)
-  3. 니치 타겟: PRD가 예시로 든 자전거 통근족 하나만 우선 구현(1인 비서 취지상 다중 니치 불필요 판단) — 니치 전용 지식 문서(`data/knowledge/자전거통근_노면가이드.md`) 추가 후 RAG 검색·브리핑 프롬프트에 반영(`src/briefing.py`의 `generate_briefing(prediction, niche)`), 디스코드 채팅으로 "자전거로 통근한다고 설정해줘"/"니치 해제해줘"로 토글(`data/niche.json`, gitignore)
-  - 참고: 1/2순위는 API 값을 그대로 전달하는 구조라 LLM/RAG와는 무관 — RAG가 실제로 개입하는 건 날씨 브리핑(`generate_briefing`)과 3순위 니치 조언뿐.
+  3. 니치 타겟: PRD가 예시로 든 자전거 통근족 하나만 우선 구현(1인 비서 취지상 다중 니치 불필요 판단) — 니치 전용 지식 문서(`data/knowledge/niche/자전거통근_노면가이드.md`) 추가, 디스코드 채팅 또는 버튼으로 "자전거"/"자동차·대중교통(기본)" 토글(`data/niche.json`, gitignore)
+  - 참고: 1/2순위는 API 값을 그대로 전달하는 구조라 LLM/RAG와는 무관 — RAG가 실제로 개입하는 건 날씨 브리핑(`generate_briefing`)과 3순위 니치 조언(`generate_niche_briefing`)뿐.
+- **사용성 개선 후속 작업** (7/4 오후, 사용자 피드백 기반):
+  1. 출근지 해제 기능 부재로 "출근지 설정 해제해줘"가 니치 해제로 잘못 분류되던 버그 수정 → `UNCOMMUTE` 인텐트 분리 추가
+  2. 자전거 니치일 땐 자차/대중교통 시간이 무의미해서 자동 알림에서 그 섹션 생략(니치 해제 시 복원, `commute.json` 데이터 자체는 안 지워짐)
+  3. 니치 조언이 날씨 문장 끝에 묻혀 안 보이던 문제 → 🚲 전용 섹션으로 분리. 겸사겸사 발견: 니치 문서가 일반 지식 폴더에 같이 있어 TF-IDF 검색(문서 수 적어 top-3 오검색)이 니치 미설정 사용자에게도 자전거 조언을 섞어 넣던 버그 → `data/knowledge/niche/`로 분리, 니치 조언은 검색 없이 문서 1:1 직접 읽기로 변경
+  4. 알림 시각을 "1324"처럼 콜론 없는 24시간제 4자리 숫자로도 설정 가능하게 파싱 보강
+  5. 니치 설정(자전거/기본)·채팅 정리를 자연어 대신 버튼(discord.ui.View)으로도 가능하게 추가 — Claude 분류 호출 없이 즉시 처리. 도움말 요청 시 버튼 패널을 채널에 자동 핀 고정(채팅 정리해도 안 지워짐)
+  - 초대 링크: `https://discord.com/oauth2/authorize?client_id=1522624990674026656&permissions=75776&scope=bot` (Send Messages+Manage Messages+Read Message History, 토큰과 client_id 일치 확인 완료)
 
 ## Streamlit Cloud 배포 절차
 1. https://share.streamlit.io 접속 → GitHub 계정으로 로그인
@@ -44,11 +51,11 @@
 - `src/discord_chat_bot.py` (7/4 추가): 대화형 봇. 키워드 매칭 대신 Claude(haiku)가 매 메시지 의도를 분류. `DISCORD_BOT_TOKEN` 필요(.env), Developer Portal에서 "Message Content Intent" 켜야 함. 계속 실행 상태 유지 필요(`python -m src.discord_chat_bot`).
   - 오늘/내일 날씨 질문 → RAG 브리핑 답장(오늘=실측값, 내일=LSTM 예측, 그 이상은 "미지원" 안내)
   - 자연어로 알림 시각 설정("매일 아침 8시에 알려줘") → `data/schedule.json`(gitignore)에 저장, 매분 체크해서 자동 발송
-  - 채팅 정리("메시지 정리해줘", 기본 50개) → `channel.purge()`, 봇에 "메시지 관리" 권한 필요
-  - 도움말("뭐 할 수 있어?") → 기능 안내(`HELP_TEXT`)
+  - 채팅 정리("메시지 정리해줘", 기본 50개, 또는 버튼) → `channel.purge(check=lambda m: not m.pinned)`, 봇에 "메시지 관리" 권한 필요. 핀 고정된 설정 패널은 보존
+  - 도움말("뭐 할 수 있어?") → `HELP_TEXT` + 설정 버튼 패널(`SettingsView`) 전송, 채널에 처음 한 번 자동 핀 고정
   - 출퇴근 소요시간("강남역에서 서울역까지 얼마나 걸려?") → `src/traffic.py`가 TMAP(자차)·ODsay(대중교통) 조회, 매번 채팅으로 출발지/도착지 입력
-  - 출근지 설정("출근지 강남역에서 서울역으로 설정해줘") → `data/commute.json`(gitignore)에 저장, 이후 알림 보낼 때마다 날씨+출퇴근 소요시간을 구분된 섹션으로 같이 발송(`_build_daily_message`)
-  - 니치 타겟(자전거 통근, "자전거로 통근한다고 설정해줘"/"니치 해제해줘") → `data/niche.json`(gitignore)에 저장, `generate_briefing(prediction, niche)`이 니치 전용 지식 문서(`data/knowledge/자전거통근_노면가이드.md`)를 RAG로 검색해 노면·윈드칠·미세먼지 조언을 브리핑에 반영
+  - 출근지 설정("출근지 강남역에서 서울역으로 설정해줘") / 해제("출근지 해제해줘" → `UNCOMMUTE` 인텐트) → `data/commute.json`(gitignore)에 저장, 이후 알림 보낼 때마다 날씨+출퇴근 소요시간을 구분된 섹션으로 같이 발송(`_build_daily_message`). 자전거 니치일 땐 이 섹션 생략(데이터는 유지, 니치 해제하면 복원)
+  - 니치 타겟(자전거 통근) — 채팅("자전거로 통근한다고 설정해줘"/"니치 해제해줘") 또는 버튼(🚲/🚗)으로 토글, `data/niche.json`(gitignore)에 저장. `generate_niche_briefing()`이 `data/knowledge/niche/자전거통근_노면가이드.md`를 검색 없이 직접 읽어 날씨 섹션과 분리된 별도 섹션(🚲)으로 생성
 - `.env.example` 추가 — `ANTHROPIC_API_KEY`, `DISCORD_WEBHOOK_URL`, `DISCORD_BOT_TOKEN`, `TMAP_APP_KEY`, `ODSAY_API_KEY`
 - 검증: `python -m src.predictor`, `python -m src.rag`, `python -m src.briefing`, `python -m src.discord_bot` 전부 실행 확인·통과(7/3). Claude API 브리핑 생성 + 디스코드 웹훅 전송 실동작 확인 완료
 
