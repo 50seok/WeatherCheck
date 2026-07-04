@@ -58,10 +58,16 @@ def _minus_minutes(hhmm: str, minutes: int) -> str:
 
 
 def _load_schedule() -> dict:
-    if os.path.exists(SCHEDULE_PATH):
-        with open(SCHEDULE_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+    """반환값: {channel_id: {"target": "HH:MM", "user_id": int|None}}.
+    예전엔 값이 "HH:MM" 문자열이었어서(멘션 기능 추가 전) 그 포맷도 그대로 읽히게 변환."""
+    if not os.path.exists(SCHEDULE_PATH):
+        return {}
+    with open(SCHEDULE_PATH, encoding="utf-8") as f:
+        schedule = json.load(f)
+    return {
+        cid: (entry if isinstance(entry, dict) else {"target": entry, "user_id": None})
+        for cid, entry in schedule.items()
+    }
 
 
 def _save_schedule(schedule: dict) -> None:
@@ -130,11 +136,13 @@ class SettingsView(discord.ui.View):
 
     @discord.ui.button(label="🧹 채팅 정리", style=discord.ButtonStyle.danger, custom_id="clear_chat")
     async def clear_chat(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # ponytail: purge()가 3초 넘게 걸리면 응답 전 인터랙션 토큰이 만료돼 "Unknown interaction" 404가 남 -> 먼저 defer로 확인응답부터 하고 followup으로 결과 전송
+        await interaction.response.defer(ephemeral=True)
         try:
             deleted = await interaction.channel.purge(limit=DEFAULT_CLEAR_COUNT, check=lambda m: not m.pinned)
-            await interaction.response.send_message(f"🧹 메시지 {len(deleted)}개 정리했어요.", ephemeral=True)
+            await interaction.followup.send(f"🧹 메시지 {len(deleted)}개 정리했어요.", ephemeral=True)
         except discord.Forbidden:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "메시지를 지울 권한이 없어요. 봇 권한에 '메시지 관리(Manage Messages)'를 추가해주세요.", ephemeral=True
             )
 
@@ -143,8 +151,12 @@ async def _send_settings_panel(channel: discord.abc.Messageable) -> None:
     """도움말+설정 버튼 패널 전송. 채널에 이미 봇이 고정해둔 패널이 없으면 새로 핀 고정(채팅 정리해도 안 지워짐)."""
     sent = await channel.send(HELP_TEXT, view=SettingsView())
     try:
-        pins = await channel.pins()
-        if not any(p.author == client.user for p in pins):
+        already_pinned = False
+        async for p in channel.pins():
+            if p.author == client.user:
+                already_pinned = True
+                break
+        if not already_pinned:
             await sent.pin()
     except discord.Forbidden:
         pass  # 핀 권한 없으면 그냥 일반 메시지로만 남음
@@ -243,13 +255,13 @@ async def on_message(message: discord.Message):
         if detail:
             channel_id = str(message.channel.id)
             schedule = _load_schedule()
-            schedule[channel_id] = detail
+            schedule[channel_id] = {"target": detail, "user_id": message.author.id}
             _save_schedule(schedule)
-            await message.channel.send(f"✅ 매일 {detail}에 이 채널로 브리핑을 보내드릴게요.")
+            await message.channel.send(f"✅ 매일 {detail}에 이 채널로 브리핑을 보내드릴게요. (@{message.author.display_name}님께 알림 멘션도 같이 갈게요)")
             now = dt.datetime.now()
             if now.strftime("%H:%M") >= detail:
                 # ponytail: 등록 처리(Claude 분류 등)에 걸리는 시간 동안 목표 시각이 이미 지나가버리는 레이스 대응 -> 오늘자는 바로 발송
-                await message.channel.send(_build_daily_message(channel_id))
+                await message.channel.send(f"<@{message.author.id}>\n{_build_daily_message(channel_id)}")
                 _sent_today[(channel_id, detail)] = now.strftime("%Y-%m-%d")
         else:
             await message.channel.send("몇 시에 보내드릴까요? 예: '아침 8시에 알려줘'")
@@ -371,7 +383,8 @@ async def check_schedule():
     now = dt.datetime.now()
     hhmm = now.strftime("%H:%M")
     today = now.strftime("%Y-%m-%d")
-    for channel_id, target in _load_schedule().items():
+    for channel_id, entry in _load_schedule().items():
+        target, user_id = entry["target"], entry["user_id"]
         key = (channel_id, target)
         if _sent_today.get(key) == today:
             continue
@@ -392,7 +405,8 @@ async def check_schedule():
                 text = cached_text
             else:
                 text = _build_daily_message(channel_id)
-            await channel.send(text)
+            mention = f"<@{user_id}>\n" if user_id else ""
+            await channel.send(mention + text)
             _sent_today[key] = today
             print(f"[check_schedule] sent to {key}", flush=True)
 
