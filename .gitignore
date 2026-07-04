@@ -15,5 +15,6 @@ notebooks/figures/*
 chroma_db/
 data/schedule.json
 data/commute.json
+data/niche.json
 .ipynb_checkpoints/
 .claude/settings.local.json

@@ -1,6 +1,6 @@
 # STATUS — WeatherCheck
 
-> 갱신: 2026-07-03 · **마감: 2026-07-07(월) 09:00 제출(프로젝트+보고서)**
+> 갱신: 2026-07-04 · **마감: 2026-07-07(월) 09:00 제출(프로젝트+보고서)**
 > GitHub: https://github.com/50seok/WeatherCheck (private)
 
 ## 진행 체크리스트
@@ -15,6 +15,11 @@
   1. Cloud 기본 Python 3.14에 tensorflow wheel 없어 설치 실패 → `.python-version`으로 3.13 고정 (7/4)
   2. 모델·데이터 파일 gitignore돼서 배포 때마다 LSTM 재학습 발생 → 로딩 지연 원인. 용량이 450KB 미만이라 그냥 git에 커밋(`data/raw/seoul_weather.csv`, `src/dl/models/lstm_model.keras`, `notebooks/figures/*.png`)해서 재학습 자체를 없앰 (7/4)
 - 데모 영상: 생략 결정 (7/3)
+- **PRD 차별화 우선순위 진행** (7/4): 1순위 교통 결합 → 2순위 출근지 설정 → 3순위 니치 타겟(자전거 통근) 순으로 구현 완료. 4순위(개인 체감 피드백)는 미시작.
+  1. 교통 결합: TMAP(자차 경로)·ODsay(대중교통 경로) API 연동, 디스코드 채팅으로 출발지/도착지 매번 입력받는 방식(`src/traffic.py`)
+  2. 출근지 설정: 출발지/도착지를 한 번 등록해두면 이후 알림에 날씨+출퇴근 소요시간을 같이 보내줌(`data/commute.json`, gitignore)
+  3. 니치 타겟: PRD가 예시로 든 자전거 통근족 하나만 우선 구현(1인 비서 취지상 다중 니치 불필요 판단) — 니치 전용 지식 문서(`data/knowledge/자전거통근_노면가이드.md`) 추가 후 RAG 검색·브리핑 프롬프트에 반영(`src/briefing.py`의 `generate_briefing(prediction, niche)`), 디스코드 채팅으로 "자전거로 통근한다고 설정해줘"/"니치 해제해줘"로 토글(`data/niche.json`, gitignore)
+  - 참고: 1/2순위는 API 값을 그대로 전달하는 구조라 LLM/RAG와는 무관 — RAG가 실제로 개입하는 건 날씨 브리핑(`generate_briefing`)과 3순위 니치 조언뿐.
 
 ## Streamlit Cloud 배포 절차
 1. https://share.streamlit.io 접속 → GitHub 계정으로 로그인
@@ -29,7 +34,7 @@
 | B | RAG·브리핑·봇 | Track A(LSTM) 통합 완료, end-to-end 검증 완료 | `C:\Mark42\WeatherCheck-rag` | feature/rag-briefing |
 
 ## Track B 구현 메모
-- `data/knowledge/*.md` (6개): 우산·일교차 옷차림·폭염·한파·미세먼지·자외선 가이드 — 기상청 생활기상지수 공개자료 요약
+- `data/knowledge/*.md` (7개): 우산·일교차 옷차림·폭염·한파·미세먼지·자외선 가이드(기상청 생활기상지수 공개자료 요약) + 자전거통근 노면가이드(니치 타겟용, 7/4 추가)
 - `src/predictor.py`: `get_prediction()` — `src.dl.predict`(LSTM, MAE 2.41°C로 ML 대비 최고 성능) 호출, contract.md 스키마 그대로 반환(`source: "lstm"`). mock(`get_mock_prediction`)은 Track A 통합 완료로 제거.
 - `data/raw/seoul_weather.csv`, `src/dl/models/lstm_model.keras`, `notebooks/figures/*.png`: 원래 gitignore 대상이었으나 배포 시 매번 재학습돼 로딩이 느려지는 문제 발견(7/4) → 용량이 450KB 미만이라 `.gitignore`에 예외 추가 후 git에 커밋. `src/dl/predict.py`의 "파일 없으면 재학습" 폴백은 유지(로컬에서 파일 지우고 실험할 때나 향후 재학습 시 대비용).
 - `src/rag.py`: Chroma(`chroma_db/`, gitignore됨)로 인덱싱. 임베딩은 Chroma 기본 ONNX 모델(79MB 다운로드) 대신 **TF-IDF(sklearn)** 사용 — 이 네트워크에서 ONNX 모델 다운로드가 반복적으로 timeout돼서 판단 후 교체. 문서 6~10개 규모라 매 검색마다 컬렉션 재구축해도 즉시 처리됨
@@ -40,7 +45,10 @@
   - 자연어로 알림 시각 설정("매일 아침 8시에 알려줘") → `data/schedule.json`(gitignore)에 저장, 매분 체크해서 자동 발송
   - 채팅 정리("메시지 정리해줘", 기본 50개) → `channel.purge()`, 봇에 "메시지 관리" 권한 필요
   - 도움말("뭐 할 수 있어?") → 기능 안내(`HELP_TEXT`)
-- `.env.example` 추가 — `ANTHROPIC_API_KEY`, `DISCORD_WEBHOOK_URL`, `DISCORD_BOT_TOKEN`
+  - 출퇴근 소요시간("강남역에서 서울역까지 얼마나 걸려?") → `src/traffic.py`가 TMAP(자차)·ODsay(대중교통) 조회, 매번 채팅으로 출발지/도착지 입력
+  - 출근지 설정("출근지 강남역에서 서울역으로 설정해줘") → `data/commute.json`(gitignore)에 저장, 이후 알림 보낼 때마다 날씨+출퇴근 소요시간을 구분된 섹션으로 같이 발송(`_build_daily_message`)
+  - 니치 타겟(자전거 통근, "자전거로 통근한다고 설정해줘"/"니치 해제해줘") → `data/niche.json`(gitignore)에 저장, `generate_briefing(prediction, niche)`이 니치 전용 지식 문서(`data/knowledge/자전거통근_노면가이드.md`)를 RAG로 검색해 노면·윈드칠·미세먼지 조언을 브리핑에 반영
+- `.env.example` 추가 — `ANTHROPIC_API_KEY`, `DISCORD_WEBHOOK_URL`, `DISCORD_BOT_TOKEN`, `TMAP_APP_KEY`, `ODSAY_API_KEY`
 - 검증: `python -m src.predictor`, `python -m src.rag`, `python -m src.briefing`, `python -m src.discord_bot` 전부 실행 확인·통과(7/3). Claude API 브리핑 생성 + 디스코드 웹훅 전송 실동작 확인 완료
 
 ## 알려진 이슈

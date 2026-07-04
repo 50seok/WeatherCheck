@@ -8,7 +8,7 @@ load_dotenv()
 MODEL = "claude-haiku-4-5-20251001"
 
 
-def _build_query(prediction: dict) -> str:
+def _build_query(prediction: dict, niche: str | None = None) -> str:
     triggers = []
     if prediction["rain_prob"] >= 0.4:
         triggers.append("우산 강수확률")
@@ -18,20 +18,26 @@ def _build_query(prediction: dict) -> str:
         triggers.append("폭염")
     if prediction["temp_min"] <= 3:
         triggers.append("한파")
+    if niche == "bike":
+        triggers.append("자전거 통근 노면")
     return " ".join(triggers) or "내일 날씨 옷차림"
 
 
-def generate_briefing(prediction: dict) -> str:
-    hits = search(_build_query(prediction))
+def generate_briefing(prediction: dict, niche: str | None = None) -> str:
+    hits = search(_build_query(prediction, niche))
     context = "\n\n".join(f"[{doc_id}]\n{text}" for doc_id, text in hits)
 
     when = "오늘 서울 실측 날씨" if prediction.get("source") == "observed" else f"내일({prediction['date']}) 서울 날씨 예측"
+    niche_note = (
+        "\n사용자는 자전거로 통근해. 노면 상태·체감온도(윈드칠)·미세먼지 흡입량을 특히 신경써서 조언해줘."
+        if niche == "bike" else ""
+    )
     prompt = f"""{when}: 최고 {prediction['temp_max']}°C, 최저 {prediction['temp_min']}°C, 강수확률 {prediction['rain_prob'] * 100:.0f}%
 
 참고 문서:
 {context}
 
-위 참고 문서 내용을 근거로 삼아 출근 전 챙길 것을 2~3문장의 자연스러운 한국어로 안내해줘. 이모지를 섞고, 근거로 삼은 문서는 대괄호로 표시해줘(예: [문서명])."""
+위 참고 문서 내용을 근거로 삼아 출근 전 챙길 것을 2~3문장의 자연스러운 한국어로 안내해줘. 이모지를 섞고, 근거로 삼은 문서는 대괄호로 표시해줘(예: [문서명]).{niche_note}"""
 
     client = Anthropic()
     response = client.messages.create(
