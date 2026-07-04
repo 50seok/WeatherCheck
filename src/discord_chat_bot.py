@@ -18,6 +18,7 @@ from src.traffic import get_driving_eta, get_transit_eta
 load_dotenv()
 
 SCHEDULE_PATH = "data/schedule.json"
+COMMUTE_PATH = "data/commute.json"
 TIME_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_CLEAR_COUNT = 50
 PREP_MINUTES = 3  # 정각에 지연 없이 보내려고 이만큼 미리 브리핑을 만들어둠
@@ -27,6 +28,7 @@ HELP_TEXT = """🌤️ **출근 비서 봇 사용법**
 - **알림 시간 설정** — "매일 아침 8시에 알려줘" 처럼 말하면 매일 그 시각에 이 채널로 브리핑을 자동으로 보내드려요.
 - **알림 끄기** — "알림 그만 받을래" 처럼 말하면 이 채널 알림을 취소해드려요.
 - **출퇴근 소요시간** — "강남역에서 서울역까지 얼마나 걸려?" 처럼 물으면 자차/대중교통 소요시간을 알려드려요.
+- **출근지 설정** — "출근지 강남역에서 서울역으로 설정해줘" 처럼 말하면 저장해두고, 이후 알림 보낼 때마다 날씨+출퇴근 소요시간을 같이 보내드려요.
 - **채팅 정리** — "메시지 정리해줘" / "최근 100개 지워줘" 처럼 말하면 최근 메시지를 지워드려요(기본 50개). 봇에게 '메시지 관리' 권한이 있어야 해요.
 - **도움말** — "뭐 할 수 있어?", "명령어 알려줘" 라고 물어보면 이 안내를 다시 보여드려요."""
 
@@ -64,11 +66,24 @@ def _save_schedule(schedule: dict) -> None:
         json.dump(schedule, f, ensure_ascii=False, indent=2)
 
 
+def _load_commute() -> dict:
+    if os.path.exists(COMMUTE_PATH):
+        with open(COMMUTE_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_commute(commute: dict) -> None:
+    os.makedirs(os.path.dirname(COMMUTE_PATH), exist_ok=True)
+    with open(COMMUTE_PATH, "w", encoding="utf-8") as f:
+        json.dump(commute, f, ensure_ascii=False, indent=2)
+
+
 def classify_message(text: str) -> tuple[str, str | None]:
     """메시지 의도를 분류. 키워드 매칭 대신 자연스러운 표현도 인식하도록 Claude에게 위임.
 
     반환: (intent, detail)
-    intent: "weather_today" | "weather_tomorrow" | "weather_other" | "schedule" | "unschedule" | "clear" | "help" | "none"
+    intent: "weather_today" | "weather_tomorrow" | "weather_other" | "schedule" | "unschedule" | "traffic" | "commute" | "clear" | "help" | "none"
     detail: schedule일 땐 HH:MM(또는 None), clear일 땐 지울 개수(문자열 숫자, 없으면 None), 그 외엔 None.
     """
     resp = Anthropic().messages.create(
@@ -89,6 +104,8 @@ def classify_message(text: str) -> tuple[str, str | None]:
                 "(N은 지울 개수 숫자. 명시 안 됐으면 N 자리에 NONE)\n"
                 "- 출발지에서 도착지까지 얼마나 걸리는지(자차/대중교통) 묻는 요청 -> TRAFFIC 출발지|도착지"
                 "(장소명 두 개를 파이프(|)로 구분. 둘 다 명시 안 됐으면 TRAFFIC NONE)\n"
+                "- 본인 출근지(출발지-도착지)를 등록/설정해달라는 요청 -> COMMUTE 출발지|도착지"
+                "(장소명 두 개를 파이프(|)로 구분. 둘 다 명시 안 됐으면 COMMUTE NONE)\n"
                 "- 봇 사용법·도움말·명령어를 묻는 요청 -> HELP\n"
                 "- 그 외 무관한 잡담 -> NONE\n\n"
                 f"메시지: {text}"
@@ -107,6 +124,9 @@ def classify_message(text: str) -> tuple[str, str | None]:
     if result.startswith("TRAFFIC"):
         rest = result[len("TRAFFIC"):].strip()
         return "traffic", (rest if "|" in rest else None)
+    if result.startswith("COMMUTE"):
+        rest = result[len("COMMUTE"):].strip()
+        return "commute", (rest if "|" in rest else None)
     if result in ("WEATHER_TODAY", "WEATHER_TOMORROW", "WEATHER_OTHER", "HELP", "UNSCHEDULE"):
         return result.lower(), None
     return "none", None
@@ -149,7 +169,7 @@ async def on_message(message: discord.Message):
             now = dt.datetime.now()
             if now.strftime("%H:%M") >= detail:
                 # ponytail: 등록 처리(Claude 분류 등)에 걸리는 시간 동안 목표 시각이 이미 지나가버리는 레이스 대응 -> 오늘자는 바로 발송
-                await message.channel.send(_build_daily_message())
+                await message.channel.send(_build_daily_message(channel_id))
                 _sent_today[(channel_id, detail)] = now.strftime("%Y-%m-%d")
         else:
             await message.channel.send("몇 시에 보내드릴까요? 예: '아침 8시에 알려줘'")
@@ -164,6 +184,17 @@ async def on_message(message: discord.Message):
             await message.channel.send("🔕 이 채널 알림을 껐어요.")
         else:
             await message.channel.send("이 채널엔 설정된 알림이 없어요.")
+        return
+
+    if intent == "commute":
+        if not detail:
+            await message.channel.send("출근 출발지랑 도착지를 알려주세요. 예: '출근지 강남역에서 서울역으로 설정해줘'")
+            return
+        origin, destination = detail.split("|", 1)
+        commute = _load_commute()
+        commute[str(message.channel.id)] = {"origin": origin, "destination": destination}
+        _save_commute(commute)
+        await message.channel.send(f"✅ 출근지를 **{origin} → {destination}**로 설정했어요. 이제 알림에 출퇴근 소요시간도 같이 보내드려요.")
         return
 
     if intent == "traffic":
@@ -198,9 +229,29 @@ async def on_message(message: discord.Message):
         await message.channel.send(f"{format_header(pred)}\n{text}")
 
 
-def _build_daily_message() -> str:
+def _build_daily_message(channel_id: str) -> str:
+    """날씨 브리핑 + (출근지 설정돼 있으면) 출퇴근 소요시간을 혼동 없이 구분된 섹션으로 합쳐서 반환."""
     pred = get_prediction()
-    return f"{format_header(pred)}\n{generate_briefing(pred)}"
+    parts = [format_header(pred), f"🌤️ **날씨**\n{generate_briefing(pred)}"]
+
+    commute = _load_commute().get(channel_id)
+    if commute:
+        origin, destination = commute["origin"], commute["destination"]
+        try:
+            driving = get_driving_eta(origin, destination)
+            transit = get_transit_eta(origin, destination)
+            transit_line = (
+                f"대중교통: 약 {transit['minutes']}분 (환승 {transit['transfers']}회)"
+                if transit.get("minutes") is not None else "대중교통: 경로를 찾지 못했어요."
+            )
+            parts.append(
+                f"🚗 **출근길** ({origin} → {destination})\n"
+                f"자차: 약 {driving['minutes']}분 ({driving['distance_km']}km)\n{transit_line}"
+            )
+        except Exception:
+            parts.append(f"🚗 **출근길** ({origin} → {destination})\n조회 실패 — 장소명을 다시 확인해주세요.")
+
+    return "\n\n".join(parts)
 
 
 @tasks.loop(seconds=1)
@@ -215,7 +266,7 @@ async def check_schedule():
 
         # 정각 3분 전: 미리 브리핑을 만들어 캐시(정각에 지연 없이 보내기 위함)
         if hhmm == _minus_minutes(target, PREP_MINUTES) and _prepared.get(key, (None,))[0] != today:
-            _prepared[key] = (today, _build_daily_message())
+            _prepared[key] = (today, _build_daily_message(channel_id))
             print(f"[check_schedule] prepared for {key}", flush=True)
 
         if hhmm == target:
@@ -224,7 +275,7 @@ async def check_schedule():
                 print(f"[check_schedule] channel {channel_id} not found in cache!", flush=True)
                 continue
             cached_date, cached_text = _prepared.get(key, (None, None))
-            text = cached_text if cached_date == today else _build_daily_message()  # 준비 못 했으면 그 자리에서 생성
+            text = cached_text if cached_date == today else _build_daily_message(channel_id)  # 준비 못 했으면 그 자리에서 생성
             await channel.send(text)
             _sent_today[key] = today
             print(f"[check_schedule] sent to {key}", flush=True)
