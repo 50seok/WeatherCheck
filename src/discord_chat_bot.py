@@ -98,7 +98,7 @@ def classify_message(text: str) -> tuple[str, str | None]:
     """메시지 의도를 분류. 키워드 매칭 대신 자연스러운 표현도 인식하도록 Claude에게 위임.
 
     반환: (intent, detail)
-    intent: "weather_today" | "weather_tomorrow" | "weather_other" | "schedule" | "unschedule" | "traffic" | "commute" | "niche" | "clear" | "help" | "none"
+    intent: "weather_today" | "weather_tomorrow" | "weather_other" | "schedule" | "unschedule" | "traffic" | "commute" | "uncommute" | "niche" | "clear" | "help" | "none"
     detail: schedule일 땐 HH:MM(또는 None), clear일 땐 지울 개수(문자열 숫자, 없으면 None), niche일 땐 "BIKE"/"OFF", 그 외엔 None.
     """
     resp = Anthropic().messages.create(
@@ -121,8 +121,9 @@ def classify_message(text: str) -> tuple[str, str | None]:
                 "(장소명 두 개를 파이프(|)로 구분. 둘 다 명시 안 됐으면 TRAFFIC NONE)\n"
                 "- 본인 출근지(출발지-도착지)를 등록/설정해달라는 요청 -> COMMUTE 출발지|도착지"
                 "(장소명 두 개를 파이프(|)로 구분. 둘 다 명시 안 됐으면 COMMUTE NONE)\n"
+                "- 등록해둔 출근지(출발지-도착지) 설정을 해제/취소하는 요청(\"출근지 해제\", \"출근지 설정 취소\" 등) -> UNCOMMUTE\n"
                 "- 본인이 자전거로 통근한다고 설정/등록하는 요청 -> NICHE BIKE\n"
-                "- 자전거 통근 등 니치 설정을 해제/취소하는 요청 -> NICHE OFF\n"
+                "- (출근지가 아니라) 자전거 통근 니치 설정 자체를 해제/취소하는 요청(\"니치 해제\", \"자전거 통근 그만\" 등) -> NICHE OFF\n"
                 "- 봇 사용법·도움말·명령어를 묻는 요청 -> HELP\n"
                 "- 그 외 무관한 잡담 -> NONE\n\n"
                 f"메시지: {text}"
@@ -147,7 +148,7 @@ def classify_message(text: str) -> tuple[str, str | None]:
     if result.startswith("NICHE"):
         rest = result[len("NICHE"):].strip()
         return "niche", ("BIKE" if rest == "BIKE" else "OFF")
-    if result in ("WEATHER_TODAY", "WEATHER_TOMORROW", "WEATHER_OTHER", "HELP", "UNSCHEDULE"):
+    if result in ("WEATHER_TODAY", "WEATHER_TOMORROW", "WEATHER_OTHER", "HELP", "UNSCHEDULE", "UNCOMMUTE"):
         return result.lower(), None
     return "none", None
 
@@ -215,6 +216,17 @@ async def on_message(message: discord.Message):
         commute[str(message.channel.id)] = {"origin": origin, "destination": destination}
         _save_commute(commute)
         await message.channel.send(f"✅ 출근지를 **{origin} → {destination}**로 설정했어요. 이제 알림에 출퇴근 소요시간도 같이 보내드려요.")
+        return
+
+    if intent == "uncommute":
+        channel_id = str(message.channel.id)
+        commute = _load_commute()
+        if channel_id in commute:
+            del commute[channel_id]
+            _save_commute(commute)
+            await message.channel.send("🚗 출근지 설정을 해제했어요. 이제 알림에 출퇴근 소요시간은 안 보내드려요.")
+        else:
+            await message.channel.send("설정된 출근지가 없어요.")
         return
 
     if intent == "niche":
