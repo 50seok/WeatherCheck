@@ -50,7 +50,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 _sent_today: dict[tuple[str, str], str] = {}  # (channel_id, target) -> date
-_prepared: dict[tuple[str, str], tuple[str, str]] = {}  # (channel_id, target) -> (date, 미리 만들어둔 메시지)
+_prepared: dict[tuple[str, str], tuple[str, tuple, str]] = {}  # (channel_id, target) -> (date, 준비 시점 설정 스냅샷, 미리 만들어둔 메시지)
 
 
 def _minus_minutes(hhmm: str, minutes: int) -> str:
@@ -94,6 +94,13 @@ def _save_niche(niche: dict) -> None:
     os.makedirs(os.path.dirname(NICHE_PATH), exist_ok=True)
     with open(NICHE_PATH, "w", encoding="utf-8") as f:
         json.dump(niche, f, ensure_ascii=False, indent=2)
+
+
+def _settings_snapshot(channel_id: str) -> tuple:
+    """니치/출근지 미리 만들어둔 브리핑이 발송 시점까지 유효한지 비교하기 위한 스냅샷.
+    준비(정각 3분 전) 이후 설정이 바뀌면 캐시를 버리고 그 자리에서 다시 생성."""
+    commute = _load_commute().get(channel_id)
+    return (_load_niche().get(channel_id), commute["origin"] if commute else None, commute["destination"] if commute else None)
 
 
 class SettingsView(discord.ui.View):
@@ -371,7 +378,7 @@ async def check_schedule():
 
         # 정각 3분 전: 미리 브리핑을 만들어 캐시(정각에 지연 없이 보내기 위함)
         if hhmm == _minus_minutes(target, PREP_MINUTES) and _prepared.get(key, (None,))[0] != today:
-            _prepared[key] = (today, _build_daily_message(channel_id))
+            _prepared[key] = (today, _settings_snapshot(channel_id), _build_daily_message(channel_id))
             print(f"[check_schedule] prepared for {key}", flush=True)
 
         if hhmm == target:
@@ -379,8 +386,12 @@ async def check_schedule():
             if channel is None:
                 print(f"[check_schedule] channel {channel_id} not found in cache!", flush=True)
                 continue
-            cached_date, cached_text = _prepared.get(key, (None, None))
-            text = cached_text if cached_date == today else _build_daily_message(channel_id)  # 준비 못 했으면 그 자리에서 생성
+            cached_date, cached_snapshot, cached_text = _prepared.get(key, (None, None, None))
+            # 준비 못 했거나, 준비 이후 니치/출근지 설정이 바뀌었으면 캐시를 버리고 그 자리에서 다시 생성
+            if cached_date == today and cached_snapshot == _settings_snapshot(channel_id):
+                text = cached_text
+            else:
+                text = _build_daily_message(channel_id)
             await channel.send(text)
             _sent_today[key] = today
             print(f"[check_schedule] sent to {key}", flush=True)
