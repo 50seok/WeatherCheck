@@ -24,6 +24,7 @@ PREP_MINUTES = 3  # 정각에 지연 없이 보내려고 이만큼 미리 브리
 HELP_TEXT = """🌤️ **출근 비서 봇 사용법**
 - **오늘/내일 날씨** — "오늘 날씨 어때?", "내일 우산 필요해?" 처럼 물어보면 근거 문서를 인용해 답해드려요. (오늘·내일만 가능, 그 이상은 아직 지원 안 해요)
 - **알림 시간 설정** — "매일 아침 8시에 알려줘" 처럼 말하면 매일 그 시각에 이 채널로 브리핑을 자동으로 보내드려요.
+- **알림 끄기** — "알림 그만 받을래" 처럼 말하면 이 채널 알림을 취소해드려요.
 - **채팅 정리** — "메시지 정리해줘" / "최근 100개 지워줘" 처럼 말하면 최근 메시지를 지워드려요(기본 50개). 봇에게 '메시지 관리' 권한이 있어야 해요.
 - **도움말** — "뭐 할 수 있어?", "명령어 알려줘" 라고 물어보면 이 안내를 다시 보여드려요."""
 
@@ -65,7 +66,7 @@ def classify_message(text: str) -> tuple[str, str | None]:
     """메시지 의도를 분류. 키워드 매칭 대신 자연스러운 표현도 인식하도록 Claude에게 위임.
 
     반환: (intent, detail)
-    intent: "weather_today" | "weather_tomorrow" | "weather_other" | "schedule" | "clear" | "help" | "none"
+    intent: "weather_today" | "weather_tomorrow" | "weather_other" | "schedule" | "unschedule" | "clear" | "help" | "none"
     detail: schedule일 땐 HH:MM(또는 None), clear일 땐 지울 개수(문자열 숫자, 없으면 None), 그 외엔 None.
     """
     resp = Anthropic().messages.create(
@@ -81,6 +82,7 @@ def classify_message(text: str) -> tuple[str, str | None]:
                 "- 오늘·내일이 아닌 다른 날(특정 요일, 모레, 며칠 뒤 등)의 날씨를 물으면 -> WEATHER_OTHER\n"
                 "- 매일 정해진 시각에 브리핑을 자동으로 받고 싶다는 요청 -> SCHEDULE HH:MM"
                 "(24시간제. 시각이 명시 안 됐으면 HH:MM 자리에 NONE)\n"
+                "- 매일 오던 알림을 그만 받고 싶다는 요청(취소/해지 등) -> UNSCHEDULE\n"
                 "- 채팅/메시지를 정리·삭제해달라는 요청 -> CLEAR N"
                 "(N은 지울 개수 숫자. 명시 안 됐으면 N 자리에 NONE)\n"
                 "- 봇 사용법·도움말·명령어를 묻는 요청 -> HELP\n"
@@ -98,7 +100,7 @@ def classify_message(text: str) -> tuple[str, str | None]:
         parts = result.split()
         count = parts[1] if len(parts) > 1 else "NONE"
         return "clear", (count if count.isdigit() else None)
-    if result in ("WEATHER_TODAY", "WEATHER_TOMORROW", "WEATHER_OTHER", "HELP"):
+    if result in ("WEATHER_TODAY", "WEATHER_TOMORROW", "WEATHER_OTHER", "HELP", "UNSCHEDULE"):
         return result.lower(), None
     return "none", None
 
@@ -144,6 +146,17 @@ async def on_message(message: discord.Message):
                 _sent_today[(channel_id, detail)] = now.strftime("%Y-%m-%d")
         else:
             await message.channel.send("몇 시에 보내드릴까요? 예: '아침 8시에 알려줘'")
+        return
+
+    if intent == "unschedule":
+        channel_id = str(message.channel.id)
+        schedule = _load_schedule()
+        if channel_id in schedule:
+            del schedule[channel_id]
+            _save_schedule(schedule)
+            await message.channel.send("🔕 이 채널 알림을 껐어요.")
+        else:
+            await message.channel.send("이 채널엔 설정된 알림이 없어요.")
         return
 
     if intent == "weather_other":
