@@ -24,13 +24,15 @@ models = get_models()
 
 with st.sidebar:
     st.header("오늘 날씨 입력")
-    temp_avg = st.slider("평균 기온(°C)", -15.0, 35.0, 15.0, 0.5)
-    temp_max = st.slider("최고 기온(°C)", -10.0, 40.0, 20.0, 0.5)
-    temp_min = st.slider("최저 기온(°C)", -20.0, 30.0, 10.0, 0.5)
-    humidity = st.slider("습도(%)", 0, 100, 60)
-    pressure = st.slider("기압(hPa)", 990.0, 1035.0, 1013.0, 0.5)
-    wind_speed = st.slider("풍속(m/s)", 0.0, 15.0, 2.5, 0.5)
-    precip_yesterday = st.slider("어제 강수량(mm)", 0.0, 100.0, 0.0, 0.5)
+    with st.form("weather_input"):
+        temp_avg = st.slider("평균 기온(°C)", -15.0, 35.0, 15.0, 0.5)
+        temp_max = st.slider("최고 기온(°C)", -10.0, 40.0, 20.0, 0.5)
+        temp_min = st.slider("최저 기온(°C)", -20.0, 30.0, 10.0, 0.5)
+        humidity = st.slider("습도(%)", 0, 100, 60)
+        pressure = st.slider("기압(hPa)", 990.0, 1035.0, 1013.0, 0.5)
+        wind_speed = st.slider("풍속(m/s)", 0.0, 15.0, 2.5, 0.5)
+        precip_yesterday = st.slider("어제 강수량(mm)", 0.0, 100.0, 0.0, 0.5)
+        st.form_submit_button("🔍 예측하기", use_container_width=True)
 
 result = predict_tomorrow(
     models, temp_avg, temp_max, temp_min, humidity, pressure, wind_speed, precip_yesterday
