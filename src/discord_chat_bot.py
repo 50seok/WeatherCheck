@@ -26,7 +26,7 @@ PREP_MINUTES = 3  # 정각에 지연 없이 보내려고 이만큼 미리 브리
 
 HELP_TEXT = """🌤️ **출근 비서 봇 사용법**
 - **오늘/내일 날씨** — "오늘 날씨 어때?", "내일 우산 필요해?" 처럼 물어보면 근거 문서를 인용해 답해드려요. (오늘·내일만 가능, 그 이상은 아직 지원 안 해요)
-- **알림 시간 설정** — "매일 아침 8시에 알려줘" 처럼 말하면 매일 그 시각에 이 채널로 브리핑을 자동으로 보내드려요.
+- **알림 시간 설정** — "매일 아침 8시에 알려줘" 처럼 말해도 되고, "1324로 설정해줘"처럼 24시간제 숫자 4자리로 말해도 돼요(13시 24분).
 - **알림 끄기** — "알림 그만 받을래" 처럼 말하면 이 채널 알림을 취소해드려요.
 - **출퇴근 소요시간** — "강남역에서 서울역까지 얼마나 걸려?" 처럼 물으면 자차/대중교통 소요시간을 알려드려요.
 - **출근지 설정** — "출근지 강남역에서 서울역으로 설정해줘" 처럼 말하면 저장해두고, 이후 알림 보낼 때마다 날씨+출퇴근 소요시간을 같이 보내드려요.
@@ -113,7 +113,8 @@ def classify_message(text: str) -> tuple[str, str | None]:
                 "- 내일 날씨를 물으면 -> WEATHER_TOMORROW\n"
                 "- 오늘·내일이 아닌 다른 날(특정 요일, 모레, 며칠 뒤 등)의 날씨를 물으면 -> WEATHER_OTHER\n"
                 "- 매일 정해진 시각에 브리핑을 자동으로 받고 싶다는 요청 -> SCHEDULE HH:MM"
-                "(24시간제. 시각이 명시 안 됐으면 HH:MM 자리에 NONE)\n"
+                "(24시간제. \"1324\"처럼 콜론 없는 4자리 숫자로만 시각을 말해도 시각으로 인식해서 HH:MM으로 변환. "
+                "시각이 명시 안 됐으면 HH:MM 자리에 NONE)\n"
                 "- 매일 오던 알림을 그만 받고 싶다는 요청(취소/해지 등) -> UNSCHEDULE\n"
                 "- 채팅/메시지를 정리·삭제해달라는 요청 -> CLEAR N"
                 "(N은 지울 개수 숫자. 명시 안 됐으면 N 자리에 NONE)\n"
@@ -134,7 +135,8 @@ def classify_message(text: str) -> tuple[str, str | None]:
     if result.startswith("SCHEDULE"):
         parts = result.split()
         hhmm = parts[1] if len(parts) > 1 else "NONE"
-        return "schedule", (hhmm if len(hhmm) == 5 and hhmm[2] == ":" else None)
+        digits = hhmm.replace(":", "")
+        return "schedule", (f"{digits[:2]}:{digits[2:]}" if digits.isdigit() and len(digits) == 4 else None)
     if result.startswith("CLEAR"):
         parts = result.split()
         count = parts[1] if len(parts) > 1 else "NONE"
