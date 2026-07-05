@@ -23,6 +23,7 @@ COMMUTE_PATH = "data/commute.json"
 NICHE_PATH = "data/niche.json"
 DEFAULT_CLEAR_COUNT = 50
 PREP_MINUTES = 3  # 정각에 지연 없이 보내려고 이만큼 미리 브리핑을 만들어둠
+COMMUTE_WEATHER_CAVEAT_KM = 20  # 서울-목적지 직선 아닌 실주행거리 근사치, 이 이상이면 타지역 가능성 경고
 
 HELP_TEXT = """🌤️ **출근 비서 봇 사용법**
 
@@ -437,10 +438,17 @@ def _build_daily_message(channel_id: str) -> str:
                 f"대중교통: 약 {transit['minutes']}분 (환승 {transit['transfers']}회)"
                 if transit.get("minutes") is not None else "대중교통: 경로를 찾지 못했어요."
             )
-            parts.append(
+            commute_text = (
                 f"🚗 **출근길** ({origin} → {destination})\n"
                 f"자차: 약 {driving['minutes']}분 ({driving['distance_km']}km)\n{transit_line}"
             )
+            # ponytail: 서울 108지점 단일 모델의 한계 — 정확한 행정구역 판별 대신 거리로만 근사
+            if driving["distance_km"] > COMMUTE_WEATHER_CAVEAT_KM:
+                commute_text += (
+                    f"\n⚠️ 날씨 예측은 서울(기상청 108지점) 기준이라 목적지({destination})의 "
+                    "실제 날씨와 다를 수 있어요."
+                )
+            parts.append(commute_text)
         except Exception:
             parts.append(f"🚗 **출근길** ({origin} → {destination})\n조회 실패 — 장소명을 다시 확인해주세요.")
 
