@@ -59,6 +59,11 @@ def get_transit_eta(origin: str, destination: str) -> dict:
     )
     resp.raise_for_status()
     data = resp.json()
+    if "error" in data:
+        # ponytail: ODsay는 인증실패 등도 HTTP 200 + body의 error 필드로만 알려줘서
+        # raise_for_status()로는 못 잡음 -> 콘솔에 실제 사유를 남겨야 "경로 없음"과 구분 가능
+        print(f"[get_transit_eta] ODsay error: {data['error']}", flush=True)
+        return {"mode": "transit", "minutes": None, "transfers": None, "error": "경로 없음"}
     if "result" not in data or not data["result"].get("path"):
         return {"mode": "transit", "minutes": None, "transfers": None, "error": "경로 없음"}
     best = min(data["result"]["path"], key=lambda p: p["info"]["totalTime"])
