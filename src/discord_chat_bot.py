@@ -2,6 +2,7 @@
 send_briefing(웹훅, 단방향)과 별개 — 이건 실시간으로 메시지를 들어야 해서 계속 실행 상태 유지 필요.
 실행: python -m src.discord_chat_bot · 기능 목록은 HELP_TEXT 참고.
 """
+import asyncio
 import datetime as dt
 import json
 import os
@@ -13,6 +14,7 @@ from dotenv import load_dotenv
 from src.briefing import generate_briefing, generate_niche_briefing
 from src.feedback import get_personal_offset, record_feedback, save_last_weather
 from src.llm import chat as llm_chat
+from src.ml import fetch_kma
 from src.predictor import get_prediction, get_today_observed
 from src.traffic import get_driving_eta, get_transit_eta
 
@@ -24,6 +26,11 @@ NICHE_PATH = "data/niche.json"
 DEFAULT_CLEAR_COUNT = 50
 PREP_MINUTES = 3  # 정각에 지연 없이 보내려고 이만큼 미리 브리핑을 만들어둠
 COMMUTE_WEATHER_CAVEAT_KM = 20  # 서울-목적지 직선 아닌 실주행거리 근사치, 이 이상이면 타지역 가능성 경고
+# ponytail: KMA ASOS 일자료(전날 확정 관측치)가 정확히 언제 배포되는지 검증된 출처가 없어서(예보 발표
+# 시각 06/18시와는 다른 상품) 한 번의 추측 시각에 걸지 않고 하루 2번 체크. 재조회해도 날짜 기준 중복
+# 제거(fetch_kma.append)라 여러 번 걸려도 부작용 없음 — 못 받았으면 다음 체크 때, 그래도 못 받았으면
+# 다음날 자동으로 밀린 만큼 따라잡음(fetch_kma._default_range).
+KMA_FETCH_TIMES = [dt.time(hour=6, minute=30), dt.time(hour=18, minute=30)]
 
 HELP_TEXT = """🌤️ **출근 비서 봇 사용법**
 
@@ -278,12 +285,31 @@ def classify_message(text: str) -> tuple[str, str | None]:
     return "none", None
 
 
+@tasks.loop(time=KMA_FETCH_TIMES)
+async def fetch_daily_weather():
+    """매일 정해진 시각에 KMA 최신 일자료를 받아 seoul_weather.csv에 이어붙임(재학습은 불필요, predictor가
+    다음 호출부터 자동으로 최신 데이터를 씀). 실패해도 다음날 다시 시도하면서 밀린 기간까지 알아서 따라잡음."""
+    try:
+        start, end = fetch_kma._default_range()
+        if start > end:
+            return  # 이미 최신 상태
+        df = await asyncio.to_thread(fetch_kma.fetch_range, start, end)
+        if df.empty:
+            print(f"[fetch_daily_weather] {start}~{end} 조회 결과 없음(아직 KMA 미배포 추정)", flush=True)
+            return
+        await asyncio.to_thread(fetch_kma.append, df)
+        print(f"[fetch_daily_weather] appended {len(df)} rows ({start}~{end})", flush=True)
+    except Exception as e:
+        print(f"[fetch_daily_weather] failed: {e}", flush=True)
+
+
 @client.event
 async def on_ready():
     print(f"logged in as {client.user}")
     client.add_view(SettingsView())  # custom_id 고정 버튼이 재시작 후에도 계속 동작하도록 등록
     client.add_view(FeedbackView())
     check_schedule.start()
+    fetch_daily_weather.start()
 
 
 @client.event
@@ -305,7 +331,9 @@ async def on_message(message: discord.Message):
         except discord.Forbidden:
             pass  # 이 채널에서 메시지 전송/핀 권한이 없어도 아래 실제 메시지 처리는 계속 진행
 
-    intent, detail = classify_message(message.content)
+    # ponytail: classify_message가 로컬 LLM을 동기 호출(수 초 소요) -> to_thread로 스레드에 위임해서
+    # 그동안 이벤트 루프가 다른 메시지·하트비트 처리를 막지 않게 함
+    intent, detail = await asyncio.to_thread(classify_message, message.content)
     print(f"[on_message] '{message.content}' -> intent={intent} detail={detail}", flush=True)
 
     if intent == "help":
@@ -389,8 +417,8 @@ async def on_message(message: discord.Message):
         origin, destination = detail.split("|", 1)
         async with message.channel.typing():
             try:
-                driving = get_driving_eta(origin, destination)
-                transit = get_transit_eta(origin, destination)
+                driving = await asyncio.to_thread(get_driving_eta, origin, destination)
+                transit = await asyncio.to_thread(get_transit_eta, origin, destination)
             except Exception:
                 await message.channel.send(f"'{origin}' 또는 '{destination}' 경로를 못 찾았어요. 정확한 장소명으로 다시 말씀해주세요.")
                 return
@@ -409,11 +437,13 @@ async def on_message(message: discord.Message):
 
     if intent in ("weather_today", "weather_tomorrow"):
         async with message.channel.typing():
-            pred = get_today_observed() if intent == "weather_today" else get_prediction()
+            pred = await asyncio.to_thread(get_today_observed if intent == "weather_today" else get_prediction)
             niche = _load_niche().get(str(message.channel.id))
-            parts = [format_header(pred), f"🌤️ **날씨**\n{generate_briefing(pred)}"]
+            briefing = await asyncio.to_thread(generate_briefing, pred)
+            parts = [format_header(pred), f"🌤️ **날씨**\n{briefing}"]
             if niche:
-                parts.append(f"🚲 **자전거 통근 체크**\n{generate_niche_briefing(pred, niche)}")
+                niche_briefing = await asyncio.to_thread(generate_niche_briefing, pred, niche)
+                parts.append(f"🚲 **자전거 통근 체크**\n{niche_briefing}")
         await message.channel.send("\n\n".join(parts))
 
 
@@ -468,7 +498,10 @@ async def check_schedule():
 
         # 정각 3분 전: 미리 브리핑을 만들어 캐시(정각에 지연 없이 보내기 위함)
         if hhmm == _minus_minutes(target, PREP_MINUTES) and _prepared.get(key, (None,))[0] != today:
-            _prepared[key] = (today, _settings_snapshot(channel_id), _build_daily_message(channel_id))
+            # ponytail: LSTM 추론+RAG+LLM 생성이 수 초~십수 초 걸려서(동기 호출) to_thread로 위임 안 하면
+            # 이 채널 브리핑 만드는 동안 다른 채널 체크·메시지 응답이 전부 멈춤
+            text = await asyncio.to_thread(_build_daily_message, channel_id)
+            _prepared[key] = (today, _settings_snapshot(channel_id), text)
             print(f"[check_schedule] prepared for {key}", flush=True)
 
         if hhmm == target:
@@ -481,7 +514,7 @@ async def check_schedule():
             if cached_date == today and cached_snapshot == _settings_snapshot(channel_id):
                 text = cached_text
             else:
-                text = _build_daily_message(channel_id)
+                text = await asyncio.to_thread(_build_daily_message, channel_id)
             mention = f"<@{user_id}>\n" if user_id else ""
             await channel.send(mention + text, view=FeedbackView())
             _sent_today[key] = today
