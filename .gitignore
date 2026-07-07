@@ -18,5 +18,6 @@ data/commute.json
 data/niche.json
 data/feedback.json
 data/last_weather.json
+data/prediction_cache.json
 .ipynb_checkpoints/
 .claude/settings.local.json

@@ -67,7 +67,13 @@ WEEKDAYS_KR = ["월", "화", "수", "목", "금", "토", "일"]
 def format_header(prediction: dict) -> str:
     """디스코드 마크다운 헤더(#)로 날짜·요일을 크게 표시."""
     d = dt.datetime.strptime(prediction["date"], "%Y-%m-%d").date()
-    label = "오늘" if prediction.get("source") == "observed" else "내일"
+    today = dt.date.today()
+    if d == today:
+        label = "오늘"
+    elif d == today + dt.timedelta(days=1):
+        label = "내일"
+    else:
+        label = "최근 실측"  # ponytail: KMA 수집이 며칠 밀려서 관측 폴백이 오늘도 내일도 아닌 과거 날짜일 때
     return f"# {label} {d.isoformat()} ({WEEKDAYS_KR[d.weekday()]}요일)"
 
 
@@ -438,19 +444,15 @@ async def on_message(message: discord.Message):
     if intent in ("weather_today", "weather_tomorrow"):
         async with message.channel.typing():
             pred = await asyncio.to_thread(get_today_observed if intent == "weather_today" else get_prediction)
-            niche = _load_niche().get(str(message.channel.id))
             briefing = await asyncio.to_thread(generate_briefing, pred)
             parts = [format_header(pred), f"🌤️ **날씨**\n{briefing}"]
-            if niche:
-                niche_briefing = await asyncio.to_thread(generate_niche_briefing, pred, niche)
-                parts.append(f"🚲 **자전거 통근 체크**\n{niche_briefing}")
-        await message.channel.send("\n\n".join(parts))
+        await message.channel.send("\n\n".join(parts))  # ponytail: 자전거/자동차 통근 정보는 예약 브리핑 전용 — 채팅 질문 응답엔 안 붙임
 
 
 def _build_daily_message(channel_id: str) -> str:
     """날씨 브리핑 + (출근지 설정돼 있으면) 출퇴근 소요시간을 혼동 없이 구분된 섹션으로 합쳐서 반환.
     자전거 니치는 자차/대중교통 시간이 무의미해서 그 섹션은 생략(니치 해제 시 다시 표시)."""
-    pred = get_prediction()
+    pred = get_prediction()  # 예약 알림은 항상 "내일" 예측(채팅으로 직접 "오늘 날씨" 물어볼 때만 get_today_observed 사용)
     save_last_weather(channel_id, pred)  # 피드백 버튼이 "그날 날씨"를 알 수 있도록 기록
     niche = _load_niche().get(channel_id)
     personal_offset = get_personal_offset(channel_id)

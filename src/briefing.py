@@ -1,3 +1,4 @@
+import datetime as dt
 from pathlib import Path
 
 from src.llm import chat as llm_chat
@@ -67,7 +68,14 @@ def generate_briefing(prediction: dict, personal_offset: float | None = None) ->
     hits = [(doc_id, text) for doc_id, text in hits if doc_id != "일교차_옷차림지수"]
     context = "\n\n".join(f"[{doc_id}]\n{text}" for doc_id, text in hits)
 
-    when = "오늘 서울 실측 날씨" if prediction.get("source") == "observed" else f"내일({prediction['date']}) 서울 날씨 예측"
+    today = dt.date.today()
+    d = dt.datetime.strptime(prediction["date"], "%Y-%m-%d").date()
+    if d == today:
+        when = "오늘 서울 실측 날씨" if prediction.get("source") == "observed" else f"오늘({prediction['date']}) 서울 날씨 예측(전날 생성)"
+    elif d == today + dt.timedelta(days=1):
+        when = f"내일({prediction['date']}) 서울 날씨 예측"
+    else:
+        when = f"{prediction['date']} 서울 실측 날씨(데이터 수집 지연으로 최근값)"  # ponytail: KMA 수집이 밀려서 관측 폴백이 오늘도 내일도 아닐 때
     snow_note = ""
     if prediction["rain_prob"] >= 0.4 and prediction["temp_min"] <= 0:
         snow_note = "\n참고: 이 기온대의 강수는 눈·진눈깨비일 가능성이 높아. 우산보다 노면 결빙(빙판길) 주의와 방한을 우선으로 안내해줘."
