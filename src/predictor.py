@@ -17,18 +17,26 @@ def get_prediction() -> dict:
     return pred
 
 
-def _read_cache() -> dict:
-    """_cache_prediction()의 os.replace와 겹치면 Windows에서 일시적으로 PermissionError가 날 수 있어 잠깐 재시도."""
-    for attempt in range(5):
+def _retry(fn, exceptions, attempts: int = 5, delay: float = 0.02):
+    """Windows에서 os.replace와 겹치면 파일 읽기/교체가 일시적으로 PermissionError(공유 위반)를 낼 수 있어 잠깐 재시도."""
+    for attempt in range(attempts):
         try:
-            with open(PREDICTION_CACHE_PATH, encoding="utf-8") as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {}
-        except (PermissionError, json.JSONDecodeError):
-            if attempt == 4:
+            return fn()
+        except exceptions:
+            if attempt == attempts - 1:
                 raise
-            time.sleep(0.02)
+            time.sleep(delay)
+
+
+def _read_cache() -> dict:
+    def _load():
+        with open(PREDICTION_CACHE_PATH, encoding="utf-8") as f:
+            return json.load(f)
+
+    try:
+        return _retry(_load, (PermissionError, json.JSONDecodeError))
+    except FileNotFoundError:
+        return {}
 
 
 def _cache_prediction(pred: dict) -> None:
@@ -42,14 +50,7 @@ def _cache_prediction(pred: dict) -> None:
         json.dump(cache, f, ensure_ascii=False, indent=2)
     # ponytail: 원자적 교체라 읽는 쪽은 절반짜리 파일을 볼 일이 없지만, Windows는 그 순간 파일이 열려 있으면
     # replace 자체가 PermissionError(공유 위반)를 낼 수 있어 짧게 재시도.
-    for attempt in range(5):
-        try:
-            os.replace(tmp_path, PREDICTION_CACHE_PATH)
-            return
-        except PermissionError:
-            if attempt == 4:
-                raise
-            time.sleep(0.02)
+    _retry(lambda: os.replace(tmp_path, PREDICTION_CACHE_PATH), PermissionError)
 
 
 def get_today_observed() -> dict:
