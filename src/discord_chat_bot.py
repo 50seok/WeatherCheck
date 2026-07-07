@@ -498,29 +498,34 @@ async def check_schedule():
         if _sent_today.get(key) == today:
             continue
 
-        # 정각 3분 전: 미리 브리핑을 만들어 캐시(정각에 지연 없이 보내기 위함)
-        if hhmm == _minus_minutes(target, PREP_MINUTES) and _prepared.get(key, (None,))[0] != today:
-            # ponytail: LSTM 추론+RAG+LLM 생성이 수 초~십수 초 걸려서(동기 호출) to_thread로 위임 안 하면
-            # 이 채널 브리핑 만드는 동안 다른 채널 체크·메시지 응답이 전부 멈춤
-            text = await asyncio.to_thread(_build_daily_message, channel_id)
-            _prepared[key] = (today, _settings_snapshot(channel_id), text)
-            print(f"[check_schedule] prepared for {key}", flush=True)
-
-        if hhmm == target:
-            channel = client.get_channel(int(channel_id))
-            if channel is None:
-                print(f"[check_schedule] channel {channel_id} not found in cache!", flush=True)
-                continue
-            cached_date, cached_snapshot, cached_text = _prepared.get(key, (None, None, None))
-            # 준비 못 했거나, 준비 이후 니치/출근지 설정이 바뀌었으면 캐시를 버리고 그 자리에서 다시 생성
-            if cached_date == today and cached_snapshot == _settings_snapshot(channel_id):
-                text = cached_text
-            else:
+        try:
+            # 정각 3분 전: 미리 브리핑을 만들어 캐시(정각에 지연 없이 보내기 위함)
+            if hhmm == _minus_minutes(target, PREP_MINUTES) and _prepared.get(key, (None,))[0] != today:
+                # ponytail: LSTM 추론+RAG+LLM 생성이 수 초~십수 초 걸려서(동기 호출) to_thread로 위임 안 하면
+                # 이 채널 브리핑 만드는 동안 다른 채널 체크·메시지 응답이 전부 멈춤
                 text = await asyncio.to_thread(_build_daily_message, channel_id)
-            mention = f"<@{user_id}>\n" if user_id else ""
-            await channel.send(mention + text, view=FeedbackView())
-            _sent_today[key] = today
-            print(f"[check_schedule] sent to {key}", flush=True)
+                _prepared[key] = (today, _settings_snapshot(channel_id), text)
+                print(f"[check_schedule] prepared for {key}", flush=True)
+
+            if hhmm == target:
+                channel = client.get_channel(int(channel_id))
+                if channel is None:
+                    print(f"[check_schedule] channel {channel_id} not found in cache!", flush=True)
+                    continue
+                cached_date, cached_snapshot, cached_text = _prepared.get(key, (None, None, None))
+                # 준비 못 했거나, 준비 이후 니치/출근지 설정이 바뀌었으면 캐시를 버리고 그 자리에서 다시 생성
+                if cached_date == today and cached_snapshot == _settings_snapshot(channel_id):
+                    text = cached_text
+                else:
+                    text = await asyncio.to_thread(_build_daily_message, channel_id)
+                mention = f"<@{user_id}>\n" if user_id else ""
+                await channel.send(mention + text, view=FeedbackView())
+                _sent_today[key] = today
+                print(f"[check_schedule] sent to {key}", flush=True)
+        except Exception as e:
+            # ponytail: 하필 발송 순간 와이파이가 끊기는 등 일시적 실패로 예외가 나면 tasks.loop 자체가
+            # 죽어서 이후 모든 채널의 예약 알림이 영원히 멈춤 -> 이 채널만 건너뛰고 다음 틱에 재시도
+            print(f"[check_schedule] failed for {key}: {e}", flush=True)
 
 
 if __name__ == "__main__":
