@@ -71,7 +71,13 @@ def generate_briefing(prediction: dict, personal_offset: float | None = None) ->
     today = dt.date.today()
     d = dt.datetime.strptime(prediction["date"], "%Y-%m-%d").date()
     if d == today:
-        when = "오늘 서울 실측 날씨" if prediction.get("source") == "observed" else f"오늘({prediction['date']}) 서울 날씨 예측(전날 생성)"
+        source = prediction.get("source")
+        if source == "observed":
+            when = "오늘 서울 실측 날씨"
+        elif source == "kma_realtime":
+            when = f"오늘({prediction['date']}) 서울 날씨 실시간 예보"
+        else:  # source == "lstm" — 전날 계산해둔 "내일" 예측을 오늘 것으로 캐시 재사용
+            when = f"오늘({prediction['date']}) 서울 날씨 예측(전날 생성)"
     elif d == today + dt.timedelta(days=1):
         when = f"내일({prediction['date']}) 서울 날씨 예측"
     else:
