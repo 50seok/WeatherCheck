@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_URL = "https://apis.data.go.kr/1360000/VilageFcstInfoService2.0/getUltraSrtFcst"
+API_URL = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtFcst"
 SEOUL_NX, SEOUL_NY = 60, 127  # 서울(중구 인근) 격자좌표
 
 
