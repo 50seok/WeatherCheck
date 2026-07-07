@@ -4,6 +4,7 @@ import os
 import time
 
 from src.dl.predict import load_models, predict_tomorrow
+from src.ml.fetch_realtime import get_today_forecast
 from src.ml.predict import load_data
 
 PREDICTION_CACHE_PATH = "data/prediction_cache.json"
@@ -52,7 +53,13 @@ def _cache_prediction(pred: dict) -> None:
 
 
 def get_today_observed() -> dict:
-    """오늘 날씨: 어제 캐시해둔 "오늘자" 예측이 있으면 그걸 쓰고, 없으면 차선으로 가장 최근 실측치를 근사해서 반환."""
+    """오늘 날씨: 기상청 초단기예보(실시간)를 최우선으로 쓰고, 실패하면 어제 캐시해둔 "오늘자" 예측,
+    그마저 없으면 가장 최근 실측치 순으로 폴백."""
+    try:
+        return get_today_forecast()
+    except Exception as e:
+        print(f"[predictor] 초단기예보 조회 실패, 캐시/실측으로 폴백: {e}", flush=True)
+
     today = dt.date.today().isoformat()
     cached = _read_cache().get(today)
     if cached:
